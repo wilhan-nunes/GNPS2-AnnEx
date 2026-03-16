@@ -12,3 +12,4 @@ dash-core-components
 dash-html-components
 dash-renderer
 dash-table
+git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage
