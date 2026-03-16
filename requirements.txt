@@ -1,0 +1,14 @@
+Flask
+gunicorn
+plotly
+pandas
+requests
+tqdm
+Werkzeug==2.3.7
+Flask-Caching
+dash
+dash-bootstrap-components
+dash-core-components
+dash-html-components
+dash-renderer
+dash-table
