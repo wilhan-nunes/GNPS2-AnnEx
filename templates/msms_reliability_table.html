@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MS/MS Annotation Reliability Score</title>
+<style>
+  /* ── Reset & base ─────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #0f1117;
+    --surface:     #181c27;
+    --surface2:    #1e2333;
+    --border:      rgba(255,255,255,0.07);
+    --border2:     rgba(255,255,255,0.13);
+    --text:        #e2e6f0;
+    --muted:       #7a8099;
+    --accent:      #4fa3e3;
+
+    --green:       #34d399;
+    --green-dim:   rgba(52,211,153,0.12);
+    --amber:       #fbbf24;
+    --amber-dim:   rgba(251,191,36,0.12);
+    --red:         #f87171;
+    --red-dim:     rgba(248,113,113,0.12);
+    --blue:        #60a5fa;
+    --blue-dim:    rgba(96,165,250,0.12);
+
+    --mono:        'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --sans:        'DM Sans', 'Outfit', system-ui, sans-serif;
+
+    --radius:      8px;
+    --radius-lg:   12px;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ── Query metadata bar ───────────────────────────────────── */
+  .query-bar {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 1.75rem;
+    background: var(--surface);
+  }
+  .query-field {
+    flex: 1;
+    padding: 12px 18px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .query-field:last-child { border-right: none; }
+  .query-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .query-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* ── Rank tabs ────────────────────────────────────────────── */
+  .tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .tab {
+    padding: 6px 14px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--sans);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active {
+    background: var(--blue-dim);
+    border-color: var(--blue);
+    color: var(--blue);
+  }
+
+  /* ── Main layout: gauge + table ──────────────────────────── */
+  .score-layout {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  /* ── Gauge card ───────────────────────────────────────────── */
+  .gauge-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-lg);
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  .gauge-svg { width: 140px; height: 110px; }
+  .gauge-score {
+    font-family: var(--mono);
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .gauge-sublabel {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+  .gauge-badge {
+    padding: 4px 14px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid;
+  }
+  .gauge-reliability {
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .gauge-divider {
+    width: 100%;
+    height: 1px;
+    background: var(--border);
+  }
+  .compound-name {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    font-style: italic;
+    line-height: 1.4;
+  }
+
+  /* ── Component table ──────────────────────────────────────── */
+  .table-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead tr {
+    border-bottom: 1px solid var(--border2);
+  }
+  thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  thead th:not(:first-child) { text-align: right; }
+  thead th:nth-child(3) { text-align: left; }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.025); }
+
+  td {
+    padding: 11px 14px;
+    vertical-align: middle;
+  }
+  td:not(:first-child):not(:nth-child(3)) { text-align: right; }
+
+  .td-component strong {
+    display: block;
+    font-weight: 500;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .td-component span {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .td-weight {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* normalised bar */
+  .bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .bar-bg {
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--border2);
+    overflow: hidden;
+    min-width: 80px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s cubic-bezier(0.4,0,0.2,1);
+  }
+  .bar-val {
+    font-family: var(--mono);
+    font-size: 12px;
+    min-width: 36px;
+    text-align: right;
+  }
+
+  .td-contrib {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* total row */
+  .total-row td {
+    border-top: 1px solid var(--border2);
+    padding-top: 13px;
+    padding-bottom: 13px;
+  }
+  .total-row .td-component strong { font-size: 13px; color: var(--muted); }
+  .total-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .total-score {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  /* ── Legend ───────────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 1rem;
+    font-size: 11px;
+    color: var(--muted);
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .legend-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+
+  /* ── Responsive ───────────────────────────────────────────── */
+  @media (max-width: 700px) {
+    body { padding: 1rem; }
+    .score-layout { grid-template-columns: 1fr; }
+    .gauge-card { flex-direction: row; padding: 16px; align-items: center; }
+    .query-bar { flex-wrap: wrap; }
+    .query-field { flex: none; width: 50%; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Query metadata ───────────────────────────────────────── -->
+<div class="query-bar">
+  <div class="query-field">
+    <span class="query-label">Query precursor m/z</span>
+    <span class="query-val">311.1648</span>
+  </div>
+  <div class="query-field">
+    <span class="query-label">Adduct</span>
+    <span class="query-val">[M+H]⁺</span>
+  </div>
+  <div class="query-field">
+    <span class="query-label">RT (query)</span>
+    <span class="query-val">4.82 min</span>
+  </div>
+  <div class="query-field">
+    <span class="query-label">Spectral entropy</span>
+    <span class="query-val">1.43 (moderate)</span>
+  </div>
+  <div class="query-field">
+    <span class="query-label">Library</span>
+    <span class="query-val">GNPS / MoNA</span>
+  </div>
+</div>
+
+<!-- ── Rank selector tabs ────────────────────────────────────── -->
+<div class="tabs" id="tabs">
+  <button class="tab active" onclick="show(0)">Rank #1 · Quercetin 3-Glc</button>
+  <button class="tab" onclick="show(1)">Rank #2 · Isorhamnetin 3-Glc</button>
+  <button class="tab" onclick="show(2)">Rank #3 · Kaempferol 3-Glc</button>
+  <button class="tab" onclick="show(3)">Rank #4 · Luteolin 7-Glc</button>
+  <button class="tab" onclick="show(4)">Rank #5 · Unknown</button>
+</div>
+
+<!-- ── Score layout ─────────────────────────────────────────── -->
+<div class="score-layout">
+
+  <!-- Gauge card -->
+  <div class="gauge-card">
+    <svg class="gauge-svg" viewBox="0 0 140 110" id="gauge-svg">
+      <!-- background arc drawn by JS -->
+    </svg>
+    <div class="gauge-score" id="gauge-score">—</div>
+    <div class="gauge-sublabel">composite reliability score</div>
+    <div class="gauge-badge" id="gauge-badge">—</div>
+    <div class="gauge-reliability" id="gauge-rel">—</div>
+    <div class="gauge-divider"></div>
+    <div class="compound-name" id="compound-name">—</div>
+  </div>
+
+  <!-- Component breakdown table -->
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:38%">Component</th>
+          <th style="width:8%">Weight</th>
+          <th style="width:30%">Normalised value</th>
+          <th style="width:12%">Raw</th>
+          <th style="width:12%">Contribution</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- ── Legend ───────────────────────────────────────────────── -->
+<div class="legend">
+  <span><span class="legend-dot" style="background:#34d399"></span>High (≥ 0.80 → Level 2)</span>
+  <span><span class="legend-dot" style="background:#fbbf24"></span>Moderate (0.55–0.79 → Level 3)</span>
+  <span><span class="legend-dot" style="background:#f87171"></span>Low (0.30–0.54 → Level 4)</span>
+  <span><span class="legend-dot" style="background:#6b7280"></span>Unknown (< 0.30 → Level 5)</span>
+  <span style="margin-left:auto">Score gap: rank1 cosine − rank2 cosine. Only meaningful for rank #1.</span>
+</div>
+
+
+<script>
+// ── Data ─────────────────────────────────────────────────────
+const HITS = [
+  { name: "Quercetin 3-glucoside",      cosine: 0.93, matched: 18, total: 19, ppm: 0.8,  gap: 0.19, rtDelta: 0.11, hasRT: true  },
+  { name: "Isorhamnetin 3-glucoside",   cosine: 0.74, matched: 14, total: 19, ppm: 3.2,  gap: null, rtDelta: 0.34, hasRT: true  },
+  { name: "Kaempferol 3-glucoside",     cosine: 0.71, matched: 13, total: 19, ppm: 4.1,  gap: null, rtDelta: null, hasRT: false },
+  { name: "Luteolin 7-glucoside",       cosine: 0.58, matched: 10, total: 19, ppm: 9.7,  gap: null, rtDelta: null, hasRT: false },
+  { name: "Unknown flavonoid glycoside",cosine: 0.41, matched:  7, total: 19, ppm: 12.4, gap: null, rtDelta: null, hasRT: false },
+];
+
+// ── Scoring weights & normalisations ─────────────────────────
+const COMPONENTS = [
+  {
+    key: "cosine",
+    label: "Cosine score",
+    formula: "value (0–1)  ×  0.30",
+    weight: 0.30,
+    norm: h => h.cosine,
+    rawFmt: h => h.cosine.toFixed(2),
+  },
+  {
+    key: "frac",
+    label: "Fraction peaks matched",
+    formula: "matched / total  ×  0.25",
+    weight: 0.25,
+    norm: h => h.matched / h.total,
+    rawFmt: h => `${h.matched} / ${h.total}`,
+  },
+  {
+    key: "gap",
+    label: "Score gap  (rank 1 − rank 2)",
+    formula: "min(gap / 0.30, 1)  ×  0.20",
+    weight: 0.20,
+    norm: h => h.gap !== null ? Math.min(1, h.gap / 0.30) : 0,
+    rawFmt: h => h.gap !== null ? `+${h.gap.toFixed(2)}` : "n/a",
+  },
+  {
+    key: "ppm",
+    label: "Precursor Δm/z error",
+    formula: "max(0, 1 − ppm / 15)  ×  0.15",
+    weight: 0.15,
+    norm: h => Math.max(0, 1 - h.ppm / 15),
+    rawFmt: h => `${h.ppm} ppm`,
+  },
+  {
+    key: "rt",
+    label: "RT deviation",
+    formula: "max(0, 1 − ΔRT / 1.0)  ×  0.10",
+    weight: 0.10,
+    norm: h => h.hasRT ? Math.max(0, 1 - h.rtDelta / 1.0) : 0.5,
+    rawFmt: h => h.hasRT ? `${h.rtDelta} min` : "n/a",
+  },
+];
+
+function computeScore(h) {
+  return COMPONENTS.reduce((sum, c) => sum + c.norm(h) * c.weight, 0);
+}
+
+// ── Styling helpers ───────────────────────────────────────────
+function barColor(v) {
+  if (v >= 0.75) return "#34d399";
+  if (v >= 0.45) return "#fbbf24";
+  return "#f87171";
+}
+
+function levelInfo(score) {
+  if (score >= 0.80) return { level: "Level 2", rel: "High confidence",    color: "#34d399", badgeBg: "rgba(52,211,153,0.12)",  badgeBorder: "#34d399" };
+  if (score >= 0.55) return { level: "Level 3", rel: "Moderate confidence", color: "#fbbf24", badgeBg: "rgba(251,191,36,0.12)",  badgeBorder: "#fbbf24" };
+  if (score >= 0.30) return { level: "Level 4", rel: "Low confidence",      color: "#f87171", badgeBg: "rgba(248,113,113,0.12)", badgeBorder: "#f87171" };
+  return                     { level: "Level 5", rel: "Unknown",             color: "#6b7280", badgeBg: "rgba(107,114,128,0.12)", badgeBorder: "#6b7280" };
+}
+
+// ── Gauge arc drawing ─────────────────────────────────────────
+function describeArc(cx, cy, r, startDeg, endDeg) {
+  const toRad = d => (d * Math.PI) / 180;
+  const s = { x: cx + r * Math.cos(toRad(startDeg)), y: cy + r * Math.sin(toRad(startDeg)) };
+  const e = { x: cx + r * Math.cos(toRad(endDeg)),   y: cy + r * Math.sin(toRad(endDeg))   };
+  const large = (endDeg - startDeg) > 180 ? 1 : 0;
+  return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y}`;
+}
+
+function drawGauge(score, color) {
+  const svg = document.getElementById("gauge-svg");
+  const cx = 70, cy = 78, r = 52;
+  const startDeg = 210, totalSweep = 120 * 2; // 210 → 330 (240°)
+  const endDeg = startDeg + totalSweep * score;
+
+  svg.innerHTML = `
+    <path d="${describeArc(cx, cy, r, startDeg, startDeg + totalSweep)}"
+      fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="10" stroke-linecap="round"/>
+    <path d="${describeArc(cx, cy, r, startDeg, endDeg)}"
+      fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round"
+      style="transition: stroke-dasharray 0.5s"/>
+  `;
+}
+
+// ── Render function ───────────────────────────────────────────
+function show(idx) {
+  // update tab states
+  document.querySelectorAll(".tab").forEach((t, i) => t.classList.toggle("active", i === idx));
+
+  const h = HITS[idx];
+  const score = computeScore(h);
+  const info = levelInfo(score);
+
+  // gauge
+  drawGauge(score, info.color);
+  document.getElementById("gauge-score").textContent = score.toFixed(2);
+  document.getElementById("gauge-score").style.color = info.color;
+
+  const badge = document.getElementById("gauge-badge");
+  badge.textContent = info.level;
+  badge.style.color = info.color;
+  badge.style.background = info.badgeBg;
+  badge.style.borderColor = info.badgeBorder;
+
+  const rel = document.getElementById("gauge-rel");
+  rel.textContent = info.rel;
+  rel.style.color = info.color;
+
+  document.getElementById("compound-name").textContent = h.name;
+
+  // table rows
+  const tbody = document.getElementById("tbody");
+  let rows = COMPONENTS.map(c => {
+    const norm = c.norm(h);
+    const contrib = norm * c.weight;
+    const pct = Math.round(norm * 100);
+    const col = barColor(norm);
+    return `
+      <tr>
+        <td class="td-component">
+          <strong>${c.label}</strong>
+          <span>${c.formula}</span>
+        </td>
+        <td class="td-weight">${c.weight.toFixed(2)}</td>
+        <td>
+          <div class="bar-cell">
+            <div class="bar-bg">
+              <div class="bar-fill" style="width:${pct}%; background:${col};"></div>
+            </div>
+            <span class="bar-val" style="color:${col}">${norm.toFixed(3)}</span>
+          </div>
+        </td>
+        <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">${c.rawFmt(h)}</td>
+        <td class="td-contrib" style="color:${col}">${contrib.toFixed(3)}</td>
+      </tr>`;
+  }).join("");
+
+  rows += `
+    <tr class="total-row">
+      <td><span class="total-label">Composite reliability score</span></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td class="total-score" style="color:${info.color}">${score.toFixed(3)}</td>
+    </tr>`;
+
+  tbody.innerHTML = rows;
+}
+
+// init
+show(0);
+</script>
+</body>
+</html>

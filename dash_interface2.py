@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import base64
+from functools import lru_cache
 from io import BytesIO
 import urllib.parse
 
@@ -29,6 +30,7 @@ dash_app.title = "GNPS2 Library Confidence"
 
 
 SUPPORTED_WORKFLOWS = {"auto", "classic", "fbmn", "librarysearch"}
+ENTROPY_USI_TIMEOUT_SEC = 8
 
 
 def _get_url_param(param_dict, key, default=""):
@@ -59,6 +61,7 @@ def _normalize_library_matches_dataframe(df):
         "InChIKey": ["InChIKey", "inchikey", "INCHIKEY"],
         "InChIKey-Planar": ["InChIKey-Planar", "inchikey-planar", "INCHIKEY-PLANAR"],
         "INCHI": ["INCHI", "InChI", "inchi"],
+        "Library_Class": ["Library_Class", "library_class", "Library Class", "LibraryClass", "libraryclass"],
     }
 
     for canonical_name, candidates in canonical_columns.items():
@@ -107,6 +110,76 @@ def _confidence_category(score):
     return "Unreliable", "danger"
 
 
+def _parse_library_class(value):
+    text = _to_text(value)
+    if not text:
+        return None
+
+    numeric_value = None
+    try:
+        numeric_value = int(float(text))
+    except Exception:
+        for character in text:
+            if character in {"1", "2", "3"}:
+                numeric_value = int(character)
+                break
+
+    if numeric_value in {1, 2, 3}:
+        return numeric_value
+    return None
+
+
+def _library_class_to_quality_score(library_class_value):
+    # GNPS library classes: 1 = highest confidence source, 3 = lower confidence source.
+    class_quality_map = {
+        1: 1.00,
+        2: 0.65,
+        3: 0.30,
+    }
+    if library_class_value in class_quality_map:
+        return class_quality_map[library_class_value]
+    # Neutral fallback when class is missing/unparseable.
+    return 0.50
+
+
+@lru_cache(maxsize=4096)
+def _get_entropy_similarity_from_usis(query_usi, library_usi):
+    query_usi = _to_text(query_usi)
+    library_usi = _normalize_library_usi(library_usi)
+    if not query_usi or not library_usi:
+        return None
+
+    try:
+        from spectral_entropy_v2 import (
+            DEFAULT_MAX_PEAK_NUM,
+            DEFAULT_MS2_TOLERANCE_DA,
+            DEFAULT_NOISE_THRESHOLD,
+            entropy_similarity_pair,
+            fetch_spectrum,
+        )
+    except BaseException:
+        return None
+
+    try:
+        query_spec = fetch_spectrum(query_usi, timeout=ENTROPY_USI_TIMEOUT_SEC)
+        library_spec = fetch_spectrum(library_usi, timeout=ENTROPY_USI_TIMEOUT_SEC)
+        similarity_payload = entropy_similarity_pair(
+            query_spec.get("peaks", []),
+            library_spec.get("peaks", []),
+            ms2_tolerance_da=DEFAULT_MS2_TOLERANCE_DA,
+            noise_threshold=DEFAULT_NOISE_THRESHOLD,
+            max_peak_num=DEFAULT_MAX_PEAK_NUM,
+        )
+        entropy_similarity = similarity_payload.get("entropy_similarity")
+        if entropy_similarity is None:
+            return None
+        entropy_similarity = float(entropy_similarity)
+        return max(0.0, min(1.0, entropy_similarity))
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=128)
 def _get_direct_resultview_dataframe(task_id, view_name):
     response = requests.get(
         "https://gnps2.org/result",
@@ -212,10 +285,22 @@ def _load_library_matches(task_id, workflow_choice):
     )
 
 
-def _compute_scan_level_confidence(df):
-    scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"]) 
+def _compute_scan_level_confidence(
+    df,
+    task_id="",
+    workflow_choice="auto",
+    scan_filter=None,
+    use_entropy_similarity=True,
+):
+    scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
     compound_col = _find_first_column(df, ["Compound_Name", "compound_name", "Compound Name"])
+    library_usi_col = _find_first_column(df, ["library_usi", "LibraryUSI", "library usi"])
+    spectrum_file_col = _find_first_column(df, ["SpectrumFile"])
+    library_class_col = _find_first_column(
+        df,
+        ["Library_Class", "library_class", "Library Class", "LibraryClass", "libraryclass"],
+    )
 
     if scan_col is None:
         raise ValueError("Could not find scan column (#Scan# / scan / Scan) in library results.")
@@ -224,6 +309,9 @@ def _compute_scan_level_confidence(df):
 
     work_df = df.copy()
     work_df[scan_col] = work_df[scan_col].astype(str)
+    if scan_filter is not None:
+        work_df = work_df[work_df[scan_col] == str(scan_filter)].copy()
+
     work_df["_cosine"] = pd.to_numeric(work_df[cosine_col], errors="coerce").fillna(0.0)
     work_df["_structure_key"] = work_df.apply(_canonical_structure_key, axis=1)
     work_df["_compound"] = (
@@ -231,6 +319,23 @@ def _compute_scan_level_confidence(df):
         if compound_col is not None
         else "Unknown"
     )
+    work_df["_library_usi"] = (
+        work_df[library_usi_col].astype(str)
+        if library_usi_col is not None
+        else ""
+    )
+    work_df["_spectrum_file"] = (
+        work_df[spectrum_file_col].astype(str)
+        if spectrum_file_col is not None
+        else ""
+    )
+    work_df["_library_class"] = (
+        work_df[library_class_col].apply(_parse_library_class)
+        if library_class_col is not None
+        else None
+    )
+    work_df["_library_class_quality"] = work_df["_library_class"].apply(_library_class_to_quality_score)
+    resolved_workflow = _infer_resolved_workflow(work_df, workflow_choice)
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -254,9 +359,30 @@ def _compute_scan_level_confidence(df):
         support_fraction = best["count"] / total_matches if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
+        class_quality = float(structure_hits["_library_class_quality"].mean()) if len(structure_hits) else 0.5
+        class_counts = structure_hits["_library_class"].value_counts(dropna=True).to_dict()
+        class_1_hits = int(class_counts.get(1, 0))
+        class_2_hits = int(class_counts.get(2, 0))
+        class_3_hits = int(class_counts.get(3, 0))
+        entropy_similarity = None
+        entropy_source = "disabled"
+        if use_entropy_similarity:
+            representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
+            representative_library_usi = _normalize_library_usi(representative_row.get("_library_usi"))
+            representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
+            query_usi = _build_query_usi(task_id, scan, resolved_workflow, spectrum_file=representative_spectrum_file)
+            entropy_similarity = _get_entropy_similarity_from_usis(query_usi, representative_library_usi)
+            entropy_source = "spectral_entropy"
+        if entropy_similarity is None:
+            entropy_similarity = mean_cosine
+            if use_entropy_similarity:
+                entropy_source = "mean_cosine_fallback"
 
         confidence_score = 100.0 * (
-            0.60 * support_fraction + 0.30 * mean_cosine + 0.10 * max_cosine
+            0.50 * support_fraction
+            + 0.25 * entropy_similarity
+            + 0.10 * max_cosine
+            + 0.15 * class_quality
         )
         confidence_label, badge_color = _confidence_category(confidence_score)
 
@@ -269,6 +395,12 @@ def _compute_scan_level_confidence(df):
                 "total_matches": int(total_matches),
                 "mean_cosine": round(mean_cosine, 4),
                 "max_cosine": round(max_cosine, 4),
+                "entropy_similarity": round(float(entropy_similarity), 4),
+                "entropy_source": entropy_source,
+                "library_class_quality": round(class_quality, 4),
+                "class_1_hits": class_1_hits,
+                "class_2_hits": class_2_hits,
+                "class_3_hits": class_3_hits,
                 "confidence_score": round(confidence_score, 1),
                 "confidence_label": confidence_label,
                 "badge_color": badge_color,
@@ -380,10 +512,16 @@ def _build_mirror_plot_link(query_usi, library_usi):
     return f"https://metabolomics-usi.gnps2.org/dashinterface/?{params}"
 
 
-def _build_detail_panel(task_id, scan, workflow_choice):
+def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=True):
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
-    summary_df = _compute_scan_level_confidence(matches_df)
+    summary_df = _compute_scan_level_confidence(
+        matches_df,
+        task_id=task_id,
+        workflow_choice=resolved_workflow,
+        scan_filter=scan,
+        use_entropy_similarity=use_entropy_similarity,
+    )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
     if scan_col is None:
@@ -428,19 +566,58 @@ def _build_detail_panel(task_id, scan, workflow_choice):
                             dbc.Col(
                                 html.Div(
                                     [
-                                        html.Strong("Cosine (mean / max)"),
+                                        html.Strong("Entropy Similarity"),
                                         html.Br(),
-                                        f"{score_row['mean_cosine']} / {score_row['max_cosine']}",
+                                        f"{score_row['entropy_similarity']} ({score_row['entropy_source']})",
                                     ]
                                 ),
                                 md=3,
                             ),
                         ]
                     ),
+                    html.Br(),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Strong("Library Class Quality"),
+                                        html.Br(),
+                                        score_row["library_class_quality"],
+                                    ]
+                                ),
+                                md=3,
+                            ),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Strong("Class 1/2/3 Hits"),
+                                        html.Br(),
+                                        f"{score_row['class_1_hits']} / {score_row['class_2_hits']} / {score_row['class_3_hits']}",
+                                    ]
+                                ),
+                                md=5,
+                            ),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Strong("Cosine (mean / max)"),
+                                        html.Br(),
+                                        f"{score_row['mean_cosine']} / {score_row['max_cosine']}",
+                                    ]
+                                ),
+                                md=4,
+                            ),
+                        ]
+                    ),
                     html.Hr(),
                     html.A(
                         "Back to table",
-                        href=f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}&workflow={urllib.parse.quote(str(workflow_choice))}",
+                        href=(
+                            f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
+                            f"&workflow={urllib.parse.quote(str(workflow_choice))}"
+                            f"&entropy={'1' if use_entropy_similarity else '0'}"
+                        ),
                     ),
                 ]
             ),
@@ -578,12 +755,23 @@ CONTROLS_CARD = dbc.Card(
                     ],
                     className="mb-3",
                 ),
+                dbc.Checklist(
+                    id="use-entropy",
+                    options=[{"label": "Use spectral entropy similarity in score", "value": "disabled"}],
+                    value=["disabled"],
+                    switch=True,
+                    className="mb-3",
+                ),
                 dbc.Button("Load Library Matches", id="run-analysis", color="primary", n_clicks=0),
                 html.Hr(),
                 html.P(
                     "Confidence is computed per scan using the fraction of supporting matches "
-                    "for the same core structure and cosine quality.",
+                    "for the same core structure, entropy similarity, max cosine, and Library_Class quality.",
                     className="mb-1",
+                ),
+                html.Small(
+                    "Score weights: support 50%, entropy similarity 25% (fallback to mean cosine if unavailable or disabled), max cosine 10%, Library_Class quality 15% (Class 1 > 2 > 3).",
+                    className="text-muted d-block",
                 ),
                 html.Small(
                     "Auto mode now also tries the GNPS2 Library Search `librarymatches` JSON view.",
@@ -636,7 +824,7 @@ dash_app.layout = html.Div([NAVBAR, BODY])
 
 
 @dash_app.callback(
-    [Output("task-id", "value"), Output("workflow-choice", "value")],
+    [Output("task-id", "value"), Output("workflow-choice", "value"), Output("use-entropy", "value")],
     [Input("url", "search")],
 )
 def determine_task_from_url(search):
@@ -647,10 +835,12 @@ def determine_task_from_url(search):
 
     task_id = _get_url_param(query_dict, "task", "")
     workflow_choice = _get_url_param(query_dict, "workflow", "auto")
+    entropy_param = _get_url_param(query_dict, "entropy", "1").strip().lower()
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
-    return task_id, workflow_choice
+    use_entropy_value = [] if entropy_param in {"0", "false", "off", "no"} else ["enabled"]
+    return task_id, workflow_choice, use_entropy_value
 
 
 @dash_app.callback(
@@ -686,6 +876,8 @@ def render_detail_panel(search):
     task_id = _get_url_param(query_dict, "task", "").strip()
     scan = _get_url_param(query_dict, "scan", "").strip()
     workflow_choice = _get_url_param(query_dict, "workflow", "auto").strip() or "auto"
+    entropy_param = _get_url_param(query_dict, "entropy", "1").strip().lower()
+    use_entropy_similarity = entropy_param not in {"0", "false", "off", "no"}
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
@@ -693,7 +885,12 @@ def render_detail_panel(search):
         return dbc.Alert("Detail view requires task and scan query parameters.", color="warning")
 
     try:
-        return _build_detail_panel(task_id, scan, workflow_choice)
+        return _build_detail_panel(
+            task_id,
+            scan,
+            workflow_choice,
+            use_entropy_similarity=use_entropy_similarity,
+        )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
 
@@ -701,11 +898,12 @@ def render_detail_panel(search):
 @dash_app.callback(
     Output("results-panel", "children"),
     [Input("run-analysis", "n_clicks")],
-    [State("task-id", "value"), State("workflow-choice", "value")],
+    [State("task-id", "value"), State("workflow-choice", "value"), State("use-entropy", "value")],
 )
-def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
+def run_confidence_analysis(_n_clicks, task_id, workflow_choice, use_entropy_value):
     task_id = (task_id or "").strip()
     workflow_choice = (workflow_choice or "auto").strip().lower()
+    use_entropy_similarity = isinstance(use_entropy_value, list) and ("enabled" in use_entropy_value)
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
@@ -717,7 +915,13 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
 
     try:
         matches_df = _load_library_matches(task_id, workflow_choice)
-        summary_df = _compute_scan_level_confidence(matches_df)
+        resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
+        summary_df = _compute_scan_level_confidence(
+            matches_df,
+            task_id=task_id,
+            workflow_choice=resolved_workflow,
+            use_entropy_similarity=use_entropy_similarity,
+        )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
 
@@ -737,10 +941,20 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
     table_df["support"] = (
         table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
     )
+    table_df["class_profile"] = (
+        "C1:"
+        + table_df["class_1_hits"].astype(str)
+        + " | C2:"
+        + table_df["class_2_hits"].astype(str)
+        + " | C3:"
+        + table_df["class_3_hits"].astype(str)
+    )
     table_df["compound_link"] = table_df.apply(
         lambda row: (
             f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
-            f"&workflow={urllib.parse.quote(str(workflow_choice))}&scan={urllib.parse.quote(str(row['scan']))}&detail=1)"
+            f"&workflow={urllib.parse.quote(str(workflow_choice))}"
+            f"&entropy={'1' if use_entropy_similarity else '0'}"
+            f"&scan={urllib.parse.quote(str(row['scan']))}&detail=1)"
         ),
         axis=1,
     )
@@ -750,8 +964,12 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
             "compound_link",
             "structure_key",
             "support",
+            "entropy_similarity",
+            "entropy_source",
             "mean_cosine",
             "max_cosine",
+            "library_class_quality",
+            "class_profile",
             "confidence_score",
             "confidence_label",
         ]
@@ -765,8 +983,12 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Core Structure Key", "id": "structure_key"},
             {"name": "Support (same structure / total)", "id": "support"},
+            {"name": "Entropy Similarity", "id": "entropy_similarity"},
+            {"name": "Entropy Source", "id": "entropy_source"},
             {"name": "Mean Cosine", "id": "mean_cosine"},
             {"name": "Max Cosine", "id": "max_cosine"},
+            {"name": "Library Class Quality", "id": "library_class_quality"},
+            {"name": "Class Hits (1/2/3)", "id": "class_profile"},
             {"name": "Score", "id": "confidence_score"},
             {"name": "Confidence", "id": "confidence_label"},
         ],
@@ -806,6 +1028,30 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
                 "maxWidth": "130px",
                 "textAlign": "center",
                 "fontWeight": "600",
+            },
+            {
+                "if": {"column_id": "entropy_similarity"},
+                "width": "115px",
+                "maxWidth": "115px",
+                "textAlign": "center",
+            },
+            {
+                "if": {"column_id": "entropy_source"},
+                "width": "150px",
+                "maxWidth": "150px",
+                "textAlign": "center",
+            },
+            {
+                "if": {"column_id": "library_class_quality"},
+                "width": "120px",
+                "maxWidth": "120px",
+                "textAlign": "center",
+            },
+            {
+                "if": {"column_id": "class_profile"},
+                "width": "130px",
+                "maxWidth": "130px",
+                "textAlign": "center",
             },
             {
                 "if": {"column_id": "scan"},
@@ -849,6 +1095,7 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
                     dbc.CardBody(
                         [
                             html.P(f"Task: {task_id}"),
+                            html.P(f"Entropy scoring: {'Enabled' if use_entropy_similarity else 'Disabled'}"),
                             dbc.Badge(f"Reliable: {badge_counts['Reliable']}", color="success", className="me-2"),
                             dbc.Badge(
                                 f"Less Reliable: {badge_counts['Less Reliable']}",
