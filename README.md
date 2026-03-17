@@ -4,8 +4,8 @@ This workspace now includes a GNPS2 annotation confidence dashboard at `/dashint
 
 ### What it does
 
-1. Accepts a GNPS2 FBMN or Classical Networking task ID.
-1. Retrieves library matches TSV data using the `gnpsdata` package.
+1. Accepts a GNPS2 FBMN, Classical Networking, or Library Search task ID.
+1. Retrieves library matches data from GNPS2, including the direct `librarymatches` JSON view used by Library Search.
 1. Groups matches per `#Scan#` by core structure while ignoring stereochemistry.
 1. Computes a confidence score from:
     - Structure support fraction (how many hits agree on the same core structure)
@@ -22,4 +22,4 @@ You can prefill values with query parameters:
 
 `/dashinterface2/?task=<task_id>&workflow=auto`
 
-`workflow` can be `auto`, `classic`, or `fbmn`.
+`workflow` can be `auto`, `classic`, `fbmn`, or `librarysearch`.

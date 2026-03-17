@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
+import base64
+from io import BytesIO
 import urllib.parse
 
 import dash
 from dash import Input, Output, State, dash_table, dcc, html
 import dash_bootstrap_components as dbc
 import pandas as pd
+import requests
+from rdkit import Chem
+from rdkit.Chem import Draw
 
 from gnpsdata import taskresult
 from gnpsdata import workflow_classicnetworking
@@ -23,6 +28,9 @@ dash_app = dash.Dash(
 dash_app.title = "GNPS2 Library Confidence"
 
 
+SUPPORTED_WORKFLOWS = {"auto", "classic", "fbmn", "librarysearch"}
+
+
 def _get_url_param(param_dict, key, default=""):
     return param_dict.get(key, [default])[0]
 
@@ -33,6 +41,35 @@ def _find_first_column(df, candidates):
         if col.lower() in candidate_map:
             return candidate_map[col.lower()]
     return None
+
+
+def _normalize_library_matches_dataframe(df):
+    if df is None or len(df) == 0:
+        return df
+
+    work_df = df.copy()
+    canonical_columns = {
+        "#Scan#": ["#Scan#", "scan", "Scan"],
+        "MQScore": ["MQScore", "Cosine", "cosine"],
+        "Compound_Name": ["Compound_Name", "compound_name", "Compound Name", "CompoundName"],
+        "SpectrumFile": ["SpectrumFile", "spectrumfile", "Spectrum File"],
+        "SpectrumID": ["SpectrumID", "spectrumid", "Spectrum ID"],
+        "library_usi": ["library_usi", "LibraryUSI", "Library_USI", "library usi"],
+        "Smiles": ["Smiles", "SMILES", "smiles"],
+        "InChIKey": ["InChIKey", "inchikey", "INCHIKEY"],
+        "InChIKey-Planar": ["InChIKey-Planar", "inchikey-planar", "INCHIKEY-PLANAR"],
+        "INCHI": ["INCHI", "InChI", "inchi"],
+    }
+
+    for canonical_name, candidates in canonical_columns.items():
+        if canonical_name in work_df.columns:
+            continue
+
+        matched_column = _find_first_column(work_df, candidates)
+        if matched_column is not None:
+            work_df = work_df.rename(columns={matched_column: canonical_name})
+
+    return work_df
 
 
 def _canonical_structure_key(row):
@@ -70,47 +107,108 @@ def _confidence_category(score):
     return "Unreliable", "danger"
 
 
+def _get_direct_resultview_dataframe(task_id, view_name):
+    response = requests.get(
+        "https://gnps2.org/result",
+        params={"task": task_id, "viewname": view_name, "json": ""},
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+    if isinstance(payload, list):
+        return pd.DataFrame(payload)
+
+    if isinstance(payload, dict):
+        for key in ["data", "results", "rows"]:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return pd.DataFrame(value)
+        if len(payload) > 0:
+            return pd.DataFrame([payload])
+
+    return pd.DataFrame()
+
+
 def _load_library_matches(task_id, workflow_choice):
+    workflow_choice = (workflow_choice or "auto").strip().lower()
     loaders = []
 
     if workflow_choice == "classic":
-        loaders = [
-            lambda tid: workflow_classicnetworking.get_librarymatches_dataframe(tid, gnps2=True),
-        ]
+        loaders.extend(
+            [
+                (
+                    "classical-networking loader",
+                    lambda tid: workflow_classicnetworking.get_librarymatches_dataframe(tid, gnps2=True),
+                ),
+            ]
+        )
     elif workflow_choice == "fbmn":
-        loaders = [
-            lambda tid: workflow_fbmn.get_library_match_dataframe(tid, gnps2=True),
-        ]
+        loaders.extend(
+            [
+                (
+                    "fbmn loader",
+                    lambda tid: workflow_fbmn.get_library_match_dataframe(tid, gnps2=True),
+                ),
+            ]
+        )
+    elif workflow_choice == "librarysearch":
+        loaders.extend(
+            [
+                (
+                    "direct GNPS2 librarymatches JSON view",
+                    lambda tid: _get_direct_resultview_dataframe(tid, "summarylist"),
+                ),
+            ]
+        )
     else:
-        loaders = [
-            lambda tid: workflow_classicnetworking.get_librarymatches_dataframe(tid, gnps2=True),
-            lambda tid: workflow_fbmn.get_library_match_dataframe(tid, gnps2=True),
-        ]
+        loaders.extend(
+            [
+                (
+                    "direct GNPS2 librarymatches JSON view",
+                    lambda tid: _get_direct_resultview_dataframe(tid, "librarymatches"),
+                ),
+                (
+                    "classical-networking loader",
+                    lambda tid: workflow_classicnetworking.get_librarymatches_dataframe(tid, gnps2=True),
+                ),
+                (
+                    "fbmn loader",
+                    lambda tid: workflow_fbmn.get_library_match_dataframe(tid, gnps2=True),
+                ),
+            ]
+        )
 
-    # Always keep a direct taskresult fallback for compatibility.
+    # Keep taskresult-based fallbacks for compatibility across GNPS2 workflows.
     loaders.extend(
         [
-            lambda tid: taskresult.get_gnps2_task_resultfile_dataframe(
-                tid,
-                "nf_output/library/merged_results_with_gnps.tsv",
+            (
+                "taskresult merged_results_with_gnps.tsv",
+                lambda tid: taskresult.get_gnps2_task_resultfile_dataframe(
+                    tid,
+                    "nf_output/library/merged_results_with_gnps.tsv",
+                ),
             ),
-            lambda tid: taskresult.get_task_resultview_dataframe(tid, "librarymatches"),
+            (
+                "taskresult librarymatches view",
+                lambda tid: taskresult.get_task_resultview_dataframe(tid, "librarymatches"),
+            ),
         ]
     )
 
     errors = []
-    for loader in loaders:
+    for loader_name, loader in loaders:
         try:
-            df = loader(task_id)
+            df = _normalize_library_matches_dataframe(loader(task_id))
             if df is not None and len(df) > 0:
                 return df
         except Exception as exc:
-            errors.append(str(exc))
+            errors.append(f"{loader_name}: {exc}")
 
     raise ValueError(
         "Could not load library matches for this task ID. "
         "Please verify the task is finished and has library matches. "
-        + (" | ".join(errors[-2:]) if errors else "")
+        + (" | ".join(errors[-3:]) if errors else "")
     )
 
 
@@ -184,6 +282,257 @@ def _compute_scan_level_confidence(df):
     return summary_df
 
 
+def _to_text(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() == "nan":
+        return ""
+    return text
+
+
+def _render_mol_png_data_uri(smiles="", inchi=""):
+    smiles = _to_text(smiles)
+    inchi = _to_text(inchi)
+
+    mol = None
+    if smiles:
+        mol = Chem.MolFromSmiles(smiles)
+
+    if mol is None and inchi:
+        mol = Chem.MolFromInchi(inchi)
+
+    if mol is None:
+        return ""
+
+    image = Draw.MolToImage(mol, size=(220, 220))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    encoded_image = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    return f"data:image/png;base64,{encoded_image}"
+
+
+def _normalize_library_usi(library_usi):
+    library_usi = _to_text(library_usi)
+    if not library_usi:
+        return ""
+
+    if "mzspec:GNPS:GNPS-LIBRARY:accession:" in library_usi:
+        return library_usi
+
+    prefix = "mzspec:GNPS:GNPS-LIBRARY:"
+    if library_usi.startswith(prefix):
+        suffix = library_usi[len(prefix):]
+        if suffix.startswith("accession:"):
+            return f"{prefix}{suffix}"
+        if suffix.startswith("CCMSLIB"):
+            return f"{prefix}accession:{suffix}"
+
+    if library_usi.startswith("CCMSLIB"):
+        return f"{prefix}accession:{library_usi}"
+
+    return library_usi
+
+
+def _infer_resolved_workflow(matches_df, workflow_choice):
+    workflow_choice = (workflow_choice or "auto").strip().lower()
+    if workflow_choice in SUPPORTED_WORKFLOWS and workflow_choice != "auto":
+        return workflow_choice
+
+    spectrum_file_col = _find_first_column(matches_df, ["SpectrumFile"])
+    if spectrum_file_col is None:
+        return "auto"
+
+    observed_names = {
+        _to_text(value).split("/")[-1]
+        for value in matches_df[spectrum_file_col].dropna().head(25).tolist()
+        if _to_text(value)
+    }
+    generated_names = {"spectra_filtered.mgf", "spectra_reformatted.mgf"}
+
+    if observed_names and observed_names.isdisjoint(generated_names):
+        return "librarysearch"
+
+    return "auto"
+
+
+def _build_query_usi(task_id, scan, workflow_choice, spectrum_file=""):
+    if workflow_choice == "librarysearch":
+        spectrum_file = _to_text(spectrum_file).lstrip("/")
+        if not spectrum_file:
+            return ""
+
+        scan = str(scan)
+        return f"mzspec:GNPS2:TASK-{task_id}-inputspectra/{spectrum_file}:scan:{scan}"
+
+    scan = str(scan)
+    return f"mzspec:GNPS2:TASK-{task_id}-nf_output/clustering/spectra_reformatted.mgf:scan:{scan}"
+
+
+def _build_mirror_plot_link(query_usi, library_usi):
+    query_usi = _to_text(query_usi)
+    library_usi = _normalize_library_usi(library_usi)
+    if not query_usi or not library_usi:
+        return ""
+
+    params = urllib.parse.urlencode({"usi1": query_usi, "usi2": library_usi})
+    return f"https://metabolomics-usi.gnps2.org/dashinterface/?{params}"
+
+
+def _build_detail_panel(task_id, scan, workflow_choice):
+    matches_df = _load_library_matches(task_id, workflow_choice)
+    resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
+    summary_df = _compute_scan_level_confidence(matches_df)
+
+    scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
+    if scan_col is None:
+        raise ValueError("Could not find scan column in library results.")
+
+    scan_df = matches_df[matches_df[scan_col].astype(str) == str(scan)].copy()
+    if len(scan_df) == 0:
+        raise ValueError(f"No matches found for scan {scan} in task {task_id}.")
+
+    score_row = summary_df[summary_df["scan"].astype(str) == str(scan)]
+    if len(score_row) == 0:
+        raise ValueError(f"Could not compute confidence metrics for scan {scan}.")
+    score_row = score_row.iloc[0]
+
+    cosine_col = _find_first_column(scan_df, ["MQScore", "Cosine", "cosine"])
+    compound_col = _find_first_column(scan_df, ["Compound_Name", "compound_name", "Compound Name"])
+    library_usi_col = _find_first_column(scan_df, ["library_usi", "LibraryUSI", "library usi"])
+    spectrum_file_col = _find_first_column(scan_df, ["SpectrumFile"])
+    smiles_col = _find_first_column(scan_df, ["Smiles", "SMILES", "smiles"])
+    inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
+    inchi_col = _find_first_column(scan_df, ["INCHI", "InChI", "inchi"])
+
+    metric_card = dbc.Card(
+        [
+            dbc.CardHeader(html.H5(f"Detail View: Task {task_id}, Scan {scan}")),
+            dbc.CardBody(
+                [
+                    dbc.Row(
+                        [
+                            dbc.Col(html.Div([html.Strong("Confidence Badge"), html.Br(), score_row["confidence_label"]]), md=3),
+                            dbc.Col(html.Div([html.Strong("Confidence Score"), html.Br(), score_row["confidence_score"]]), md=3),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Strong("Support"),
+                                        html.Br(),
+                                        f"{score_row['supporting_matches']} / {score_row['total_matches']}",
+                                    ]
+                                ),
+                                md=3,
+                            ),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Strong("Cosine (mean / max)"),
+                                        html.Br(),
+                                        f"{score_row['mean_cosine']} / {score_row['max_cosine']}",
+                                    ]
+                                ),
+                                md=3,
+                            ),
+                        ]
+                    ),
+                    html.Hr(),
+                    html.A(
+                        "Back to table",
+                        href=f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}&workflow={urllib.parse.quote(str(workflow_choice))}",
+                    ),
+                ]
+            ),
+        ],
+        className="mb-3",
+    )
+
+    spectrum_file = ""
+    if spectrum_file_col is not None and len(scan_df) > 0:
+        spectrum_file = _to_text(scan_df.iloc[0][spectrum_file_col])
+
+    query_usi = _build_query_usi(task_id, scan, resolved_workflow, spectrum_file=spectrum_file)
+    scan_df["_cosine"] = pd.to_numeric(scan_df[cosine_col], errors="coerce").fillna(0.0) if cosine_col else 0.0
+    scan_df["_compound"] = scan_df[compound_col].astype(str) if compound_col else "Unknown"
+    scan_df["_library_usi"] = scan_df[library_usi_col].astype(str) if library_usi_col else ""
+    scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
+    scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
+    scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
+
+    detail_rows = (
+        scan_df.sort_values("_cosine", ascending=False)
+        .drop_duplicates(subset=["_compound", "_library_usi", "_smiles", "_inchikey"])
+        .head(25)
+    )
+
+    cards = []
+    for _, row in detail_rows.iterrows():
+        compound = _to_text(row.get("_compound")) or "Unknown Compound"
+        lib_usi = _to_text(row.get("_library_usi"))
+        smiles = _to_text(row.get("_smiles"))
+        inchikey = _to_text(row.get("_inchikey"))
+        inchi = _to_text(row.get("_inchi"))
+        cosine = row.get("_cosine", 0.0)
+
+        image_url = _render_mol_png_data_uri(smiles=smiles, inchi=inchi)
+        normalized_library_usi = _normalize_library_usi(lib_usi)
+
+        mirror_url = ""
+        if normalized_library_usi:
+            mirror_url = _build_mirror_plot_link(query_usi, normalized_library_usi)
+
+        card_body = [
+            html.H6(compound),
+            html.Div(f"Cosine: {round(float(cosine), 4)}"),
+            html.Small(
+                f"Library USI: {normalized_library_usi}" if normalized_library_usi else "Library USI unavailable",
+                className="text-muted",
+            ),
+            html.Br(),
+            html.Small(f"InChIKey: {inchikey}" if inchikey else "InChIKey unavailable", className="text-muted"),
+            html.Br(),
+            html.Small(
+                "SMILES/InChI available" if (smiles or inchi) else "SMILES/InChI unavailable",
+                className="text-muted",
+            ),
+            html.Hr(),
+            html.H6("Mirror Plot"),
+            html.Div(
+                html.A("Open mirror plot", href=mirror_url, target="_blank")
+                if mirror_url
+                else "Mirror plot link unavailable for this hit"
+            ),
+        ]
+
+        if image_url:
+            card_body.insert(
+                1,
+                html.Img(
+                    src=image_url,
+                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                ),
+            )
+
+        cards.append(
+            dbc.Col(
+                dbc.Card(dbc.CardBody(card_body), className="mb-3"),
+                lg=4,
+                md=6,
+                sm=12,
+            )
+        )
+
+    compounds_card = dbc.Card(
+        [
+            dbc.CardHeader(html.H5("Matched Compound Structures")),
+            dbc.CardBody(dbc.Row(cards) if cards else html.Div("No compounds to display.")),
+        ]
+    )
+
+    return html.Div([metric_card, compounds_card])
+
+
 NAVBAR = dbc.Navbar(
     children=[
         dbc.NavbarBrand(
@@ -207,7 +556,7 @@ CONTROLS_CARD = dbc.Card(
                         dbc.InputGroupText("GNPS2 Task ID"),
                         dbc.Input(
                             id="task-id",
-                            placeholder="Enter FBMN or Classical Networking task ID",
+                            placeholder="Enter FBMN, Classical Networking, or Library Search task ID",
                             value="",
                         ),
                     ],
@@ -222,6 +571,7 @@ CONTROLS_CARD = dbc.Card(
                                 {"label": "Auto", "value": "auto"},
                                 {"label": "Classical Networking", "value": "classic"},
                                 {"label": "FBMN", "value": "fbmn"},
+                                {"label": "Library Search", "value": "librarysearch"},
                             ],
                             value="auto",
                         ),
@@ -234,6 +584,10 @@ CONTROLS_CARD = dbc.Card(
                     "Confidence is computed per scan using the fraction of supporting matches "
                     "for the same core structure and cosine quality.",
                     className="mb-1",
+                ),
+                html.Small(
+                    "Auto mode now also tries the GNPS2 Library Search `librarymatches` JSON view.",
+                    className="text-muted d-block",
                 ),
                 html.Small(
                     "Stereochemistry is ignored by using planar InChIKey connectivity (or fallbacks).",
@@ -250,9 +604,15 @@ BODY = dbc.Container(
         dcc.Location(id="url", refresh=False),
         dbc.Row(
             [
-                dbc.Col(CONTROLS_CARD, md=12),
+                dbc.Col(html.Div(CONTROLS_CARD, id="controls-container"), md=12),
             ],
             style={"marginTop": 24},
+        ),
+        dbc.Row(
+            [
+                dbc.Col(html.Div(id="detail-panel"), md=12),
+            ],
+            style={"marginTop": 12},
         ),
         dbc.Row(
             [
@@ -287,10 +647,55 @@ def determine_task_from_url(search):
 
     task_id = _get_url_param(query_dict, "task", "")
     workflow_choice = _get_url_param(query_dict, "workflow", "auto")
-    if workflow_choice not in {"auto", "classic", "fbmn"}:
+    if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
     return task_id, workflow_choice
+
+
+@dash_app.callback(
+    Output("controls-container", "style"),
+    [Input("url", "search")],
+)
+def toggle_controls_for_detail_view(search):
+    try:
+        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
+    except Exception:
+        query_dict = {}
+
+    detail_mode = _get_url_param(query_dict, "detail", "0") == "1"
+    if detail_mode:
+        return {"display": "none"}
+    return {"display": "block"}
+
+
+@dash_app.callback(
+    Output("detail-panel", "children"),
+    [Input("url", "search")],
+)
+def render_detail_panel(search):
+    try:
+        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
+    except Exception:
+        query_dict = {}
+
+    detail_mode = _get_url_param(query_dict, "detail", "0") == "1"
+    if not detail_mode:
+        return html.Div()
+
+    task_id = _get_url_param(query_dict, "task", "").strip()
+    scan = _get_url_param(query_dict, "scan", "").strip()
+    workflow_choice = _get_url_param(query_dict, "workflow", "auto").strip() or "auto"
+    if workflow_choice not in SUPPORTED_WORKFLOWS:
+        workflow_choice = "auto"
+
+    if not task_id or not scan:
+        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning")
+
+    try:
+        return _build_detail_panel(task_id, scan, workflow_choice)
+    except Exception as exc:
+        return dbc.Alert(str(exc), color="danger")
 
 
 @dash_app.callback(
@@ -300,9 +705,15 @@ def determine_task_from_url(search):
 )
 def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
     task_id = (task_id or "").strip()
+    workflow_choice = (workflow_choice or "auto").strip().lower()
+    if workflow_choice not in SUPPORTED_WORKFLOWS:
+        workflow_choice = "auto"
 
     if not task_id:
         return dbc.Alert("Enter a GNPS2 task ID to start.", color="secondary")
+
+    if _n_clicks is None or _n_clicks < 1:
+        return html.Div()
 
     try:
         matches_df = _load_library_matches(task_id, workflow_choice)
@@ -326,10 +737,17 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
     table_df["support"] = (
         table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
     )
+    table_df["compound_link"] = table_df.apply(
+        lambda row: (
+            f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
+            f"&workflow={urllib.parse.quote(str(workflow_choice))}&scan={urllib.parse.quote(str(row['scan']))}&detail=1)"
+        ),
+        axis=1,
+    )
     table_df = table_df[
         [
             "scan",
-            "top_compound",
+            "compound_link",
             "structure_key",
             "support",
             "mean_cosine",
@@ -344,7 +762,7 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
         data=table_df.to_dict("records"),
         columns=[
             {"name": "Scan", "id": "scan"},
-            {"name": "Proposed Compound", "id": "top_compound"},
+            {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Core Structure Key", "id": "structure_key"},
             {"name": "Support (same structure / total)", "id": "support"},
             {"name": "Mean Cosine", "id": "mean_cosine"},
@@ -369,7 +787,7 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
         },
         style_cell_conditional=[
             {
-                "if": {"column_id": "top_compound"},
+                "if": {"column_id": "compound_link"},
                 "width": "180px",
                 "maxWidth": "180px",
                 "overflow": "hidden",
@@ -446,7 +864,16 @@ def run_confidence_analysis(_n_clicks, task_id, workflow_choice):
             dbc.Card(
                 [
                     dbc.CardHeader(html.H5("Scan-Level Annotations")),
-                    dbc.CardBody([results_table]),
+                    dbc.CardBody(
+                        [
+                            html.Small(
+                                "Click a proposed compound to open the detail view with structure images and mirror-plot links.",
+                                className="text-muted",
+                            ),
+                            html.Hr(),
+                            results_table,
+                        ]
+                    ),
                 ]
             ),
         ]

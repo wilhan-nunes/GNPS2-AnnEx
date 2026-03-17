@@ -1,6 +1,7 @@
 Flask
 gunicorn
 plotly
+numpy<2
 pandas
 requests
 tqdm
@@ -12,4 +13,5 @@ dash-core-components
 dash-html-components
 dash-renderer
 dash-table
+rdkit-pypi
 git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage
