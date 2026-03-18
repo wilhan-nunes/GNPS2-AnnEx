@@ -1,6 +1,10 @@
 ## TopKonfidence Dashboard
 
-This workspace now includes a GNPS2 annotation confidence dashboard at `/dashinterface2/`.
+This workspace now includes:
+
+- a landing page at `/` with a task ID form
+- the active GNPS2 annotation confidence dashboard at `/dashinterface2/`
+- a compatibility redirect from `/dashinterface1/` to `/dashinterface2/`
 
 ### What it does
 
@@ -18,7 +22,7 @@ This workspace now includes a GNPS2 annotation confidence dashboard at `/dashint
 
 ### URL parameters
 
-You can prefill values with query parameters:
+You can prefill values with query parameters and the dashboard will auto-load:
 
 `/dashinterface2/?task=<task_id>&workflow=auto`
 
