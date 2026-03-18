@@ -9,23 +9,23 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:          #0f1117;
-    --surface:     #181c27;
-    --surface2:    #1e2333;
-    --border:      rgba(255,255,255,0.07);
-    --border2:     rgba(255,255,255,0.13);
-    --text:        #e2e6f0;
-    --muted:       #7a8099;
-    --accent:      #4fa3e3;
+    --bg:          #f5efe6;
+    --surface:     #fffdf9;
+    --surface2:    #f7f1e7;
+    --border:      rgba(39,52,68,0.08);
+    --border2:     rgba(39,52,68,0.16);
+    --text:        #1a2532;
+    --muted:       #67778a;
+    --accent:      #2f6fed;
 
-    --green:       #34d399;
-    --green-dim:   rgba(52,211,153,0.12);
-    --amber:       #fbbf24;
-    --amber-dim:   rgba(251,191,36,0.12);
-    --red:         #f87171;
-    --red-dim:     rgba(248,113,113,0.12);
-    --blue:        #60a5fa;
-    --blue-dim:    rgba(96,165,250,0.12);
+    --green:       #1d9a6c;
+    --green-dim:   #dff4ea;
+    --amber:       #d48a18;
+    --amber-dim:   #fff1d6;
+    --red:         #d35d47;
+    --red-dim:     #fde2de;
+    --blue:        #2f6fed;
+    --blue-dim:    #e4edff;
 
     --mono:        'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
     --sans:        'DM Sans', 'Outfit', system-ui, sans-serif;
@@ -36,7 +36,7 @@
 
   body {
     font-family: var(--sans);
-    background: var(--bg);
+    background: linear-gradient(180deg, #faf7f2 0%, var(--bg) 100%);
     color: var(--text);
     padding: 2rem;
     font-size: 14px;
@@ -101,6 +101,11 @@
     background: var(--blue-dim);
     border-color: var(--blue);
     color: var(--blue);
+  }
+  .tab.supporting {
+    background: var(--green-dim);
+    border-color: var(--green);
+    color: var(--green);
   }
 
   /* ── Main layout: gauge + table ──────────────────────────── */
@@ -187,20 +192,20 @@
     white-space: nowrap;
   }
   thead th:not(:first-child) { text-align: right; }
-  thead th:nth-child(3) { text-align: left; }
+  thead th:nth-child(4) { text-align: left; }
 
   tbody tr {
     border-bottom: 1px solid var(--border);
     transition: background 0.1s;
   }
   tbody tr:last-child { border-bottom: none; }
-  tbody tr:hover { background: rgba(255,255,255,0.025); }
+  tbody tr:hover { background: rgba(47,111,237,0.04); }
 
   td {
     padding: 11px 14px;
     vertical-align: middle;
   }
-  td:not(:first-child):not(:nth-child(3)) { text-align: right; }
+  td:not(:first-child):not(:nth-child(4)) { text-align: right; }
 
   .td-component strong {
     display: block;
@@ -252,6 +257,20 @@
     font-family: var(--mono);
     font-size: 13px;
     font-weight: 600;
+  }
+
+  .td-raw-primary,
+  .td-raw-secondary {
+    display: block;
+  }
+  .td-raw-primary {
+    color: var(--text);
+    font-size: 12px;
+  }
+  .td-raw-secondary {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 3px;
   }
 
   /* total row */
@@ -308,34 +327,38 @@
 <!-- ── Query metadata ───────────────────────────────────────── -->
 <div class="query-bar">
   <div class="query-field">
-    <span class="query-label">Query precursor m/z</span>
-    <span class="query-val">311.1648</span>
+    <span class="query-label">Task ID</span>
+    <span class="query-val">f6a71f61e7d74959ab12c6674c5f1e2a</span>
   </div>
   <div class="query-field">
-    <span class="query-label">Adduct</span>
-    <span class="query-val">[M+H]⁺</span>
+    <span class="query-label">Scan</span>
+    <span class="query-val">1974</span>
   </div>
   <div class="query-field">
-    <span class="query-label">RT (query)</span>
-    <span class="query-val">4.82 min</span>
+    <span class="query-label">Workflow</span>
+    <span class="query-val">FBMN</span>
   </div>
   <div class="query-field">
-    <span class="query-label">Spectral entropy</span>
-    <span class="query-val">1.43 (moderate)</span>
+    <span class="query-label">Similarity source</span>
+    <span class="query-val" id="meta-similarity">Spectral entropy similarity</span>
   </div>
   <div class="query-field">
-    <span class="query-label">Library</span>
-    <span class="query-val">GNPS / MoNA</span>
+    <span class="query-label">Structure support</span>
+    <span class="query-val" id="meta-support">5 / 6</span>
+  </div>
+  <div class="query-field">
+    <span class="query-label">Class profile</span>
+    <span class="query-val" id="meta-class-profile">C1 5 · C2 0 · C3 0</span>
   </div>
 </div>
 
 <!-- ── Rank selector tabs ────────────────────────────────────── -->
 <div class="tabs" id="tabs">
   <button class="tab active" onclick="show(0)">Rank #1 · Quercetin 3-Glc</button>
-  <button class="tab" onclick="show(1)">Rank #2 · Isorhamnetin 3-Glc</button>
-  <button class="tab" onclick="show(2)">Rank #3 · Kaempferol 3-Glc</button>
-  <button class="tab" onclick="show(3)">Rank #4 · Luteolin 7-Glc</button>
-  <button class="tab" onclick="show(4)">Rank #5 · Unknown</button>
+  <button class="tab supporting" onclick="show(1)">Rank #2 · Quercetin isomer</button>
+  <button class="tab" onclick="show(2)">Rank #3 · Isorhamnetin 3-Glc</button>
+  <button class="tab" onclick="show(3)">Rank #4 · Kaempferol 3-Glc</button>
+  <button class="tab" onclick="show(4)">Rank #5 · Luteolin 7-Glc</button>
 </div>
 
 <!-- ── Score layout ─────────────────────────────────────────── -->
@@ -352,6 +375,7 @@
     <div class="gauge-reliability" id="gauge-rel">—</div>
     <div class="gauge-divider"></div>
     <div class="compound-name" id="compound-name">—</div>
+    <div class="compound-name" id="structure-key">—</div>
   </div>
 
   <!-- Component breakdown table -->
@@ -374,84 +398,78 @@
 
 <!-- ── Legend ───────────────────────────────────────────────── -->
 <div class="legend">
-  <span><span class="legend-dot" style="background:#34d399"></span>High (≥ 0.80 → Level 2)</span>
-  <span><span class="legend-dot" style="background:#fbbf24"></span>Moderate (0.55–0.79 → Level 3)</span>
-  <span><span class="legend-dot" style="background:#f87171"></span>Low (0.30–0.54 → Level 4)</span>
-  <span><span class="legend-dot" style="background:#6b7280"></span>Unknown (< 0.30 → Level 5)</span>
-  <span style="margin-left:auto">Score gap: rank1 cosine − rank2 cosine. Only meaningful for rank #1.</span>
+  <span><span class="legend-dot" style="background:#1d9a6c"></span>Reliable: score ≥ 80</span>
+  <span><span class="legend-dot" style="background:#d48a18"></span>Less Reliable: 55–79.9</span>
+  <span><span class="legend-dot" style="background:#d35d47"></span>Unreliable: &lt; 55</span>
+  <span style="margin-left:auto">Similarity evidence uses spectral entropy when available; otherwise mean cosine is used.</span>
 </div>
 
 
 <script>
 // ── Data ─────────────────────────────────────────────────────
 const HITS = [
-  { name: "Quercetin 3-glucoside",      cosine: 0.93, matched: 18, total: 19, ppm: 0.8,  gap: 0.19, rtDelta: 0.11, hasRT: true  },
-  { name: "Isorhamnetin 3-glucoside",   cosine: 0.74, matched: 14, total: 19, ppm: 3.2,  gap: null, rtDelta: 0.34, hasRT: true  },
-  { name: "Kaempferol 3-glucoside",     cosine: 0.71, matched: 13, total: 19, ppm: 4.1,  gap: null, rtDelta: null, hasRT: false },
-  { name: "Luteolin 7-glucoside",       cosine: 0.58, matched: 10, total: 19, ppm: 9.7,  gap: null, rtDelta: null, hasRT: false },
-  { name: "Unknown flavonoid glycoside",cosine: 0.41, matched:  7, total: 19, ppm: 12.4, gap: null, rtDelta: null, hasRT: false },
+  { name: "Quercetin 3-glucoside", support: 5, total: 6, similarity: 0.92, similaritySource: "spectral entropy", maxCosine: 0.95, libraryQuality: 1.00, classProfile: "C1 5 · C2 0 · C3 0", structureKey: "XUQFMFJPTLZQDZ" },
+  { name: "Quercetin 3-glucoside isomer", support: 4, total: 6, similarity: 0.88, similaritySource: "spectral entropy", maxCosine: 0.90, libraryQuality: 0.88, classProfile: "C1 3 · C2 1 · C3 0", structureKey: "XUQFMFJPTLZQDZ" },
+  { name: "Isorhamnetin 3-glucoside", support: 2, total: 6, similarity: 0.73, similaritySource: "mean cosine fallback", maxCosine: 0.82, libraryQuality: 0.65, classProfile: "C1 0 · C2 2 · C3 0", structureKey: "NNPPMTNAJDCUHE" },
+  { name: "Kaempferol 3-glucoside", support: 1, total: 6, similarity: 0.61, similaritySource: "mean cosine fallback", maxCosine: 0.74, libraryQuality: 0.47, classProfile: "C1 0 · C2 1 · C3 1", structureKey: "IYFQKKBNBUQZFS" },
+  { name: "Luteolin 7-glucoside", support: 1, total: 6, similarity: 0.46, similaritySource: "mean cosine fallback", maxCosine: 0.58, libraryQuality: 0.30, classProfile: "C1 0 · C2 0 · C3 1", structureKey: "KBZPZVJQNLKBRS" },
 ];
 
 // ── Scoring weights & normalisations ─────────────────────────
 const COMPONENTS = [
   {
-    key: "cosine",
-    label: "Cosine score",
-    formula: "value (0–1)  ×  0.30",
-    weight: 0.30,
-    norm: h => h.cosine,
-    rawFmt: h => h.cosine.toFixed(2),
+    key: "support",
+    label: "Structure agreement",
+    formula: "supporting hits / total hits × 50%",
+    weight: 0.50,
+    norm: h => h.support / h.total,
+    rawFmt: h => `${h.support} / ${h.total} supporting hits`,
+    secondary: h => h.structureKey,
   },
   {
-    key: "frac",
-    label: "Fraction peaks matched",
-    formula: "matched / total  ×  0.25",
+    key: "similarity",
+    label: "Spectral similarity",
+    formula: h => h.similaritySource === "spectral entropy" ? "entropy similarity × 25%" : "mean cosine fallback × 25%",
     weight: 0.25,
-    norm: h => h.matched / h.total,
-    rawFmt: h => `${h.matched} / ${h.total}`,
+    norm: h => h.similarity,
+    rawFmt: h => `${h.similarity.toFixed(3)} (${h.similaritySource})`,
+    secondary: h => h.similaritySource === "spectral entropy" ? "Entropy available for this match" : "Fallback used because entropy was not available",
   },
   {
-    key: "gap",
-    label: "Score gap  (rank 1 − rank 2)",
-    formula: "min(gap / 0.30, 1)  ×  0.20",
-    weight: 0.20,
-    norm: h => h.gap !== null ? Math.min(1, h.gap / 0.30) : 0,
-    rawFmt: h => h.gap !== null ? `+${h.gap.toFixed(2)}` : "n/a",
-  },
-  {
-    key: "ppm",
-    label: "Precursor Δm/z error",
-    formula: "max(0, 1 − ppm / 15)  ×  0.15",
-    weight: 0.15,
-    norm: h => Math.max(0, 1 - h.ppm / 15),
-    rawFmt: h => `${h.ppm} ppm`,
-  },
-  {
-    key: "rt",
-    label: "RT deviation",
-    formula: "max(0, 1 − ΔRT / 1.0)  ×  0.10",
+    key: "maxCosine",
+    label: "Best cosine score",
+    formula: "max cosine × 10%",
     weight: 0.10,
-    norm: h => h.hasRT ? Math.max(0, 1 - h.rtDelta / 1.0) : 0.5,
-    rawFmt: h => h.hasRT ? `${h.rtDelta} min` : "n/a",
+    norm: h => h.maxCosine,
+    rawFmt: h => `${h.maxCosine.toFixed(3)} strongest library hit`,
+    secondary: h => "",
+  },
+  {
+    key: "libraryQuality",
+    label: "Library class quality",
+    formula: "mean mapped class score × 15%",
+    weight: 0.15,
+    norm: h => h.libraryQuality,
+    rawFmt: h => `${h.libraryQuality.toFixed(3)} quality score`,
+    secondary: h => h.classProfile,
   },
 ];
 
 function computeScore(h) {
-  return COMPONENTS.reduce((sum, c) => sum + c.norm(h) * c.weight, 0);
+  return COMPONENTS.reduce((sum, c) => sum + c.norm(h) * c.weight, 0) * 100;
 }
 
 // ── Styling helpers ───────────────────────────────────────────
 function barColor(v) {
-  if (v >= 0.75) return "#34d399";
-  if (v >= 0.45) return "#fbbf24";
-  return "#f87171";
+  if (v >= 0.75) return "#1d9a6c";
+  if (v >= 0.45) return "#d48a18";
+  return "#d35d47";
 }
 
 function levelInfo(score) {
-  if (score >= 0.80) return { level: "Level 2", rel: "High confidence",    color: "#34d399", badgeBg: "rgba(52,211,153,0.12)",  badgeBorder: "#34d399" };
-  if (score >= 0.55) return { level: "Level 3", rel: "Moderate confidence", color: "#fbbf24", badgeBg: "rgba(251,191,36,0.12)",  badgeBorder: "#fbbf24" };
-  if (score >= 0.30) return { level: "Level 4", rel: "Low confidence",      color: "#f87171", badgeBg: "rgba(248,113,113,0.12)", badgeBorder: "#f87171" };
-  return                     { level: "Level 5", rel: "Unknown",             color: "#6b7280", badgeBg: "rgba(107,114,128,0.12)", badgeBorder: "#6b7280" };
+  if (score >= 80) return { level: "Reliable", rel: "Strong supporting evidence", color: "#1d9a6c", badgeBg: "#dff4ea", badgeBorder: "#8dd5b7" };
+  if (score >= 55) return { level: "Less Reliable", rel: "Mixed supporting evidence", color: "#d48a18", badgeBg: "#fff1d6", badgeBorder: "#f0cb7e" };
+  return                  { level: "Unreliable", rel: "Weak supporting evidence", color: "#d35d47", badgeBg: "#fde2de", badgeBorder: "#efb0a5" };
 }
 
 // ── Gauge arc drawing ─────────────────────────────────────────
@@ -467,11 +485,11 @@ function drawGauge(score, color) {
   const svg = document.getElementById("gauge-svg");
   const cx = 70, cy = 78, r = 52;
   const startDeg = 210, totalSweep = 120 * 2; // 210 → 330 (240°)
-  const endDeg = startDeg + totalSweep * score;
+  const endDeg = startDeg + totalSweep * (score / 100);
 
   svg.innerHTML = `
     <path d="${describeArc(cx, cy, r, startDeg, startDeg + totalSweep)}"
-      fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="10" stroke-linecap="round"/>
+      fill="none" stroke="#dce6ef" stroke-width="10" stroke-linecap="round"/>
     <path d="${describeArc(cx, cy, r, startDeg, endDeg)}"
       fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round"
       style="transition: stroke-dasharray 0.5s"/>
@@ -481,7 +499,10 @@ function drawGauge(score, color) {
 // ── Render function ───────────────────────────────────────────
 function show(idx) {
   // update tab states
-  document.querySelectorAll(".tab").forEach((t, i) => t.classList.toggle("active", i === idx));
+  document.querySelectorAll(".tab").forEach((t, i) => {
+    t.classList.remove("active");
+    if (i === idx) t.classList.add("active");
+  });
 
   const h = HITS[idx];
   const score = computeScore(h);
@@ -489,7 +510,7 @@ function show(idx) {
 
   // gauge
   drawGauge(score, info.color);
-  document.getElementById("gauge-score").textContent = score.toFixed(2);
+  document.getElementById("gauge-score").textContent = score.toFixed(1);
   document.getElementById("gauge-score").style.color = info.color;
 
   const badge = document.getElementById("gauge-badge");
@@ -503,21 +524,28 @@ function show(idx) {
   rel.style.color = info.color;
 
   document.getElementById("compound-name").textContent = h.name;
+  document.getElementById("structure-key").textContent = `Consensus structure key: ${h.structureKey}`;
+  document.getElementById("meta-similarity").textContent = h.similaritySource === "spectral entropy"
+    ? "Spectral entropy similarity"
+    : "Mean cosine fallback";
+  document.getElementById("meta-support").textContent = `${h.support} / ${h.total}`;
+  document.getElementById("meta-class-profile").textContent = h.classProfile;
 
   // table rows
   const tbody = document.getElementById("tbody");
   let rows = COMPONENTS.map(c => {
     const norm = c.norm(h);
-    const contrib = norm * c.weight;
+    const contrib = norm * c.weight * 100;
     const pct = Math.round(norm * 100);
     const col = barColor(norm);
+    const formula = typeof c.formula === "function" ? c.formula(h) : c.formula;
     return `
       <tr>
         <td class="td-component">
           <strong>${c.label}</strong>
-          <span>${c.formula}</span>
+          <span>${formula}</span>
         </td>
-        <td class="td-weight">${c.weight.toFixed(2)}</td>
+        <td class="td-weight">${Math.round(c.weight * 100)}%</td>
         <td>
           <div class="bar-cell">
             <div class="bar-bg">
@@ -526,8 +554,11 @@ function show(idx) {
             <span class="bar-val" style="color:${col}">${norm.toFixed(3)}</span>
           </div>
         </td>
-        <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">${c.rawFmt(h)}</td>
-        <td class="td-contrib" style="color:${col}">${contrib.toFixed(3)}</td>
+        <td>
+          <span class="td-raw-primary">${c.rawFmt(h)}</span>
+          <span class="td-raw-secondary">${c.secondary(h)}</span>
+        </td>
+        <td class="td-contrib" style="color:${col}">${contrib.toFixed(1)}</td>
       </tr>`;
   }).join("");
 
@@ -537,7 +568,7 @@ function show(idx) {
       <td></td>
       <td></td>
       <td></td>
-      <td class="total-score" style="color:${info.color}">${score.toFixed(3)}</td>
+      <td class="total-score" style="color:${info.color}">${score.toFixed(1)}</td>
     </tr>`;
 
   tbody.innerHTML = rows;

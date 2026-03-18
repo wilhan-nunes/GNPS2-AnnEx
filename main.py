@@ -1,8 +1,6 @@
 from app import app
 
-# This import is necessary to make sure to 
-# tell the flask server where to serve the dash app
-import dash_interface1
+# This import is necessary so Flask registers the active Dash app.
 import dash_interface2
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 import base64
 from functools import lru_cache
 from io import BytesIO
+import math
 import urllib.parse
 
 import dash
@@ -16,7 +17,7 @@ from gnpsdata import taskresult
 from gnpsdata import workflow_classicnetworking
 from gnpsdata import workflow_fbmn
 
-from app import app
+from app import app, cache
 
 
 dash_app = dash.Dash(
@@ -31,10 +32,34 @@ dash_app.title = "GNPS2 Library Confidence"
 
 SUPPORTED_WORKFLOWS = {"auto", "classic", "fbmn", "librarysearch"}
 ENTROPY_USI_TIMEOUT_SEC = 8
+LIBRARY_RESULTS_CACHE_TIMEOUT_SEC = 86400
 
 
 def _get_url_param(param_dict, key, default=""):
     return param_dict.get(key, [default])[0]
+
+
+def _parse_dashboard_query(search):
+    try:
+        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
+    except Exception:
+        query_dict = {}
+
+    workflow_choice = _get_url_param(query_dict, "workflow", "auto").strip().lower() or "auto"
+    if workflow_choice not in SUPPORTED_WORKFLOWS:
+        workflow_choice = "auto"
+
+    entropy_param = _get_url_param(query_dict, "entropy", "0").strip().lower()
+    use_entropy_similarity = entropy_param not in {"0", "false", "off", "no"}
+
+    return {
+        "task_id": _get_url_param(query_dict, "task", "").strip(),
+        "workflow_choice": workflow_choice,
+        "use_entropy_similarity": use_entropy_similarity,
+        "use_entropy_value": ["enabled"] if use_entropy_similarity else [],
+        "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
+        "scan": _get_url_param(query_dict, "scan", "").strip(),
+    }
 
 
 def _find_first_column(df, candidates):
@@ -203,7 +228,8 @@ def _get_direct_resultview_dataframe(task_id, view_name):
     return pd.DataFrame()
 
 
-def _load_library_matches(task_id, workflow_choice):
+@cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
+def _load_library_matches_cached(task_id, workflow_choice):
     workflow_choice = (workflow_choice or "auto").strip().lower()
     loaders = []
 
@@ -283,6 +309,15 @@ def _load_library_matches(task_id, workflow_choice):
         "Please verify the task is finished and has library matches. "
         + (" | ".join(errors[-3:]) if errors else "")
     )
+
+
+def _load_library_matches(task_id, workflow_choice):
+    task_id = (task_id or "").strip()
+    workflow_choice = (workflow_choice or "auto").strip().lower() or "auto"
+    matches_df = _load_library_matches_cached(task_id, workflow_choice)
+    if matches_df is None:
+        return matches_df
+    return matches_df.copy()
 
 
 def _compute_scan_level_confidence(
@@ -423,6 +458,395 @@ def _to_text(value):
     return text
 
 
+def _truncate_text(text, max_length=36):
+    text = _to_text(text)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def _format_workflow_label(workflow_choice):
+    workflow_label_map = {
+        "auto": "Auto",
+        "classic": "Classical Networking",
+        "fbmn": "FBMN",
+        "librarysearch": "Library Search",
+    }
+    return workflow_label_map.get(_to_text(workflow_choice).lower(), workflow_choice)
+
+
+def _format_entropy_source_label(entropy_source):
+    source_label_map = {
+        "spectral_entropy": "Spectral entropy similarity",
+        "mean_cosine_fallback": "Mean cosine fallback",
+        "disabled": "Entropy disabled; mean cosine fallback",
+    }
+    return source_label_map.get(_to_text(entropy_source), "Similarity evidence")
+
+
+def _metric_bar_color(value):
+    if value >= 0.75:
+        return "#1d9a6c"
+    if value >= 0.45:
+        return "#d48a18"
+    return "#d35d47"
+
+
+def _confidence_palette(confidence_label):
+    confidence_label = _to_text(confidence_label)
+    palette_map = {
+        "Reliable": {
+            "color": "#1d9a6c",
+            "badge_background": "#dff4ea",
+            "badge_border": "#8dd5b7",
+            "tone": "Strong supporting evidence",
+        },
+        "Less Reliable": {
+            "color": "#d48a18",
+            "badge_background": "#fff1d6",
+            "badge_border": "#f0cb7e",
+            "tone": "Mixed supporting evidence",
+        },
+        "Unreliable": {
+            "color": "#d35d47",
+            "badge_background": "#fde2de",
+            "badge_border": "#efb0a5",
+            "tone": "Weak supporting evidence",
+        },
+    }
+    return palette_map.get(
+        confidence_label,
+        {
+            "color": "#58708b",
+            "badge_background": "#e9eef4",
+            "badge_border": "#c5d0da",
+            "tone": "Evidence summary",
+        },
+    )
+
+
+def _describe_svg_arc(cx, cy, radius, start_deg, end_deg):
+    start_rad = math.radians(start_deg)
+    end_rad = math.radians(end_deg)
+    start_x = cx + radius * math.cos(start_rad)
+    start_y = cy + radius * math.sin(start_rad)
+    end_x = cx + radius * math.cos(end_rad)
+    end_y = cy + radius * math.sin(end_rad)
+    large_arc = 1 if (end_deg - start_deg) > 180 else 0
+    return (
+        f"M {start_x:.3f} {start_y:.3f} "
+        f"A {radius} {radius} 0 {large_arc} 1 {end_x:.3f} {end_y:.3f}"
+    )
+
+
+def _build_reliability_gauge_data_uri(score, color):
+    score_fraction = max(0.0, min(1.0, float(score) / 100.0))
+    cx = 70
+    cy = 78
+    radius = 52
+    start_deg = 210
+    sweep_deg = 240
+    end_deg = start_deg + sweep_deg * score_fraction
+    background_arc = _describe_svg_arc(cx, cy, radius, start_deg, start_deg + sweep_deg)
+    score_arc = _describe_svg_arc(cx, cy, radius, start_deg, end_deg)
+    svg = f"""
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 110">
+      <path d="{background_arc}" fill="none" stroke="#dce6ef" stroke-width="10" stroke-linecap="round"/>
+      <path d="{score_arc}" fill="none" stroke="{color}" stroke-width="10" stroke-linecap="round"/>
+    </svg>
+    """
+    return "data:image/svg+xml;utf8," + urllib.parse.quote(svg)
+
+
+def _build_reliability_breakdown_panel(
+    task_id,
+    scan,
+    workflow_choice,
+    resolved_workflow,
+    score_row,
+    detail_rows,
+    use_entropy_similarity,
+):
+    confidence_score = float(score_row["confidence_score"])
+    confidence_label = _to_text(score_row["confidence_label"])
+    palette = _confidence_palette(confidence_label)
+    supporting_matches = int(score_row["supporting_matches"])
+    total_matches = int(score_row["total_matches"])
+    support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+    similarity_value = float(score_row["entropy_similarity"])
+    entropy_source = _to_text(score_row["entropy_source"])
+    class_quality = float(score_row["library_class_quality"])
+    max_cosine = float(score_row["max_cosine"])
+    mean_cosine = float(score_row["mean_cosine"])
+    class_1_hits = int(score_row["class_1_hits"])
+    class_2_hits = int(score_row["class_2_hits"])
+    class_3_hits = int(score_row["class_3_hits"])
+    top_compound = _to_text(score_row["top_compound"]) or "Unknown Compound"
+    structure_key = _to_text(score_row["structure_key"])
+    gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
+
+    similarity_formula = (
+        "entropy similarity × 25%"
+        if entropy_source == "spectral_entropy"
+        else "mean cosine fallback × 25%"
+    )
+    similarity_secondary = (
+        f"Mean cosine: {mean_cosine:.4f}"
+        if entropy_source == "spectral_entropy"
+        else "Used because entropy was unavailable or disabled"
+    )
+
+    metrics = [
+        {
+            "label": "Structure agreement",
+            "formula": "supporting hits / total hits × 50%",
+            "weight": 0.50,
+            "value": support_fraction,
+            "raw_primary": f"{supporting_matches} / {total_matches} hits support the same core structure",
+            "raw_secondary": _truncate_text(structure_key, max_length=48),
+        },
+        {
+            "label": "Spectral similarity",
+            "formula": similarity_formula,
+            "weight": 0.25,
+            "value": similarity_value,
+            "raw_primary": f"{similarity_value:.4f} from {_format_entropy_source_label(entropy_source).lower()}",
+            "raw_secondary": similarity_secondary,
+        },
+        {
+            "label": "Best cosine score",
+            "formula": "max cosine × 10%",
+            "weight": 0.10,
+            "value": max_cosine,
+            "raw_primary": f"{max_cosine:.4f} strongest library hit",
+            "raw_secondary": f"Mean cosine across supporting hits: {mean_cosine:.4f}",
+        },
+        {
+            "label": "Library class quality",
+            "formula": "mean mapped class score × 15%",
+            "weight": 0.15,
+            "value": class_quality,
+            "raw_primary": f"{class_quality:.4f} quality score",
+            "raw_secondary": f"C1 {class_1_hits} · C2 {class_2_hits} · C3 {class_3_hits}",
+        },
+    ]
+
+    metadata_fields = [
+        ("Task ID", task_id),
+        ("Scan", scan),
+        ("Workflow", _format_workflow_label(resolved_workflow or workflow_choice)),
+        ("Similarity source", _format_entropy_source_label(entropy_source)),
+        ("Structure support", f"{supporting_matches} / {total_matches}"),
+        ("Class profile", f"C1 {class_1_hits} · C2 {class_2_hits} · C3 {class_3_hits}"),
+    ]
+
+    annotation_pills = []
+    seen_compounds = set()
+    top_compound_included = False
+    for rank, row in enumerate(detail_rows.to_dict("records"), start=1):
+        compound = _to_text(row.get("_compound")) or "Unknown Compound"
+        if compound in seen_compounds:
+            continue
+        seen_compounds.add(compound)
+        is_primary = compound == top_compound
+        supports_consensus = _to_text(row.get("_structure_key")) == structure_key
+        pill_class = "tab"
+        if is_primary:
+            pill_class += " active"
+            top_compound_included = True
+        elif supports_consensus:
+            pill_class += " supporting"
+        annotation_pills.append(
+            html.Span(
+                f"Rank #{rank} · {_truncate_text(compound, max_length=30)}",
+                className=pill_class,
+                title=compound,
+            )
+        )
+        if len(annotation_pills) >= 6:
+            break
+
+    if not top_compound_included:
+        annotation_pills.insert(
+            0,
+            html.Span(
+                f"Consensus · {_truncate_text(top_compound, max_length=30)}",
+                className="tab active",
+                title=top_compound,
+            ),
+        )
+
+    metric_rows = []
+    for metric in metrics:
+        value = max(0.0, min(1.0, float(metric["value"])))
+        color = _metric_bar_color(value)
+        contribution = value * float(metric["weight"]) * 100.0
+        metric_rows.append(
+            html.Tr(
+                [
+                    html.Td(
+                        [
+                            html.Strong(metric["label"]),
+                            html.Span(metric["formula"]),
+                        ],
+                        className="td-component",
+                    ),
+                    html.Td(f"{int(metric['weight'] * 100)}%", className="td-weight"),
+                    html.Td(
+                        html.Div(
+                            [
+                                html.Div(
+                                    html.Div(
+                                        className="bar-fill",
+                                        style={
+                                            "width": f"{value * 100:.0f}%",
+                                            "background": color,
+                                        },
+                                    ),
+                                    className="bar-bg",
+                                ),
+                                html.Span(f"{value:.3f}", className="bar-val", style={"color": color}),
+                            ],
+                            className="bar-cell",
+                        )
+                    ),
+                    html.Td(
+                        [
+                            html.Span(metric["raw_primary"], className="td-raw-primary"),
+                            html.Span(metric["raw_secondary"], className="td-raw-secondary"),
+                        ],
+                        className="td-raw",
+                    ),
+                    html.Td(f"{contribution:.1f}", className="td-contrib", style={"color": color}),
+                ]
+            )
+        )
+
+    metric_rows.append(
+        html.Tr(
+            [
+                html.Td(html.Span("Composite reliability score", className="total-label")),
+                html.Td(),
+                html.Td(),
+                html.Td(),
+                html.Td(
+                    f"{confidence_score:.1f}",
+                    className="total-score",
+                    style={"color": palette["color"]},
+                ),
+            ],
+            className="total-row",
+        )
+    )
+
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Span(label, className="query-label"),
+                            html.Span(value, className="query-val"),
+                        ],
+                        className="query-field",
+                    )
+                    for label, value in metadata_fields
+                ],
+                className="query-bar",
+            ),
+            html.Div(annotation_pills, className="tabs"),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Img(src=gauge_src, className="gauge-svg", alt="Reliability score gauge"),
+                            html.Div(f"{confidence_score:.1f}", className="gauge-score", style={"color": palette["color"]}),
+                            html.Div("composite reliability score", className="gauge-sublabel"),
+                            html.Div(
+                                confidence_label,
+                                className="gauge-badge",
+                                style={
+                                    "color": palette["color"],
+                                    "background": palette["badge_background"],
+                                    "borderColor": palette["badge_border"],
+                                },
+                            ),
+                            html.Div(palette["tone"], className="gauge-reliability", style={"color": palette["color"]}),
+                            html.Div(className="gauge-divider"),
+                            html.Div(top_compound, className="compound-name"),
+                            html.Div(
+                                f"Consensus structure key: {_truncate_text(structure_key, max_length=42)}",
+                                className="gauge-context",
+                            ),
+                        ],
+                        className="gauge-card",
+                    ),
+                    html.Div(
+                        html.Table(
+                            [
+                                html.Thead(
+                                    html.Tr(
+                                        [
+                                            html.Th("Metric"),
+                                            html.Th("Weight"),
+                                            html.Th("Normalised value"),
+                                            html.Th("Raw evidence"),
+                                            html.Th("Contribution"),
+                                        ]
+                                    )
+                                ),
+                                html.Tbody(metric_rows),
+                            ]
+                        ),
+                        className="table-card",
+                    ),
+                ],
+                className="score-layout",
+            ),
+            html.Div(
+                [
+                    html.Span(
+                        [
+                            html.Span(className="legend-dot reliable-dot"),
+                            "Reliable: score >= 80",
+                        ]
+                    ),
+                    html.Span(
+                        [
+                            html.Span(className="legend-dot moderate-dot"),
+                            "Less Reliable: 55 to 79.9",
+                        ]
+                    ),
+                    html.Span(
+                        [
+                            html.Span(className="legend-dot low-dot"),
+                            "Unreliable: score < 55",
+                        ]
+                    ),
+                    html.Span(
+                        "Similarity evidence uses spectral entropy when available; otherwise mean cosine is used.",
+                        className="legend-note",
+                    ),
+                ],
+                className="legend",
+            ),
+            html.Div(
+                html.A(
+                    "Back to scan table",
+                    href=(
+                        f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
+                        f"&workflow={urllib.parse.quote(str(workflow_choice))}"
+                        f"&entropy={'1' if use_entropy_similarity else '0'}"
+                    ),
+                    className="detail-back-link",
+                ),
+                className="detail-actions",
+            ),
+        ],
+        className="msms-detail mb-3",
+    )
+
+
 def _render_mol_png_data_uri(smiles="", inchi=""):
     smiles = _to_text(smiles)
     inchi = _to_text(inchi)
@@ -544,87 +968,6 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
     inchi_col = _find_first_column(scan_df, ["INCHI", "InChI", "inchi"])
 
-    metric_card = dbc.Card(
-        [
-            dbc.CardHeader(html.H5(f"Detail View: Task {task_id}, Scan {scan}")),
-            dbc.CardBody(
-                [
-                    dbc.Row(
-                        [
-                            dbc.Col(html.Div([html.Strong("Confidence Badge"), html.Br(), score_row["confidence_label"]]), md=3),
-                            dbc.Col(html.Div([html.Strong("Confidence Score"), html.Br(), score_row["confidence_score"]]), md=3),
-                            dbc.Col(
-                                html.Div(
-                                    [
-                                        html.Strong("Support"),
-                                        html.Br(),
-                                        f"{score_row['supporting_matches']} / {score_row['total_matches']}",
-                                    ]
-                                ),
-                                md=3,
-                            ),
-                            dbc.Col(
-                                html.Div(
-                                    [
-                                        html.Strong("Entropy Similarity"),
-                                        html.Br(),
-                                        f"{score_row['entropy_similarity']} ({score_row['entropy_source']})",
-                                    ]
-                                ),
-                                md=3,
-                            ),
-                        ]
-                    ),
-                    html.Br(),
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                html.Div(
-                                    [
-                                        html.Strong("Library Class Quality"),
-                                        html.Br(),
-                                        score_row["library_class_quality"],
-                                    ]
-                                ),
-                                md=3,
-                            ),
-                            dbc.Col(
-                                html.Div(
-                                    [
-                                        html.Strong("Class 1/2/3 Hits"),
-                                        html.Br(),
-                                        f"{score_row['class_1_hits']} / {score_row['class_2_hits']} / {score_row['class_3_hits']}",
-                                    ]
-                                ),
-                                md=5,
-                            ),
-                            dbc.Col(
-                                html.Div(
-                                    [
-                                        html.Strong("Cosine (mean / max)"),
-                                        html.Br(),
-                                        f"{score_row['mean_cosine']} / {score_row['max_cosine']}",
-                                    ]
-                                ),
-                                md=4,
-                            ),
-                        ]
-                    ),
-                    html.Hr(),
-                    html.A(
-                        "Back to table",
-                        href=(
-                            f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
-                            f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-                            f"&entropy={'1' if use_entropy_similarity else '0'}"
-                        ),
-                    ),
-                ]
-            ),
-        ],
-        className="mb-3",
-    )
-
     spectrum_file = ""
     if spectrum_file_col is not None and len(scan_df) > 0:
         spectrum_file = _to_text(scan_df.iloc[0][spectrum_file_col])
@@ -636,11 +979,22 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
+    scan_df["_structure_key"] = scan_df.apply(_canonical_structure_key, axis=1)
 
     detail_rows = (
         scan_df.sort_values("_cosine", ascending=False)
         .drop_duplicates(subset=["_compound", "_library_usi", "_smiles", "_inchikey"])
         .head(25)
+    )
+
+    metric_card = _build_reliability_breakdown_panel(
+        task_id,
+        scan,
+        workflow_choice,
+        resolved_workflow,
+        score_row,
+        detail_rows,
+        use_entropy_similarity,
     )
 
     cards = []
@@ -723,6 +1077,34 @@ NAVBAR = dbc.Navbar(
 )
 
 
+def _build_intro_panel():
+    return dbc.Card(
+        [
+            dbc.CardHeader(html.H5("Start With a GNPS2 Task")),
+            dbc.CardBody(
+                [
+                    html.P(
+                        "Enter a completed GNPS2 task ID above to load library matches and score each scan.",
+                        className="mb-2",
+                    ),
+                    html.Ul(
+                        [
+                            html.Li("Supported workflows: FBMN, Classical Networking, and Library Search."),
+                            html.Li("Each scan is scored from structure agreement, spectral similarity, and library class quality."),
+                            html.Li("Open a proposed compound to inspect the detailed evidence and mirror-plot links."),
+                        ],
+                        className="mb-2",
+                    ),
+                    html.Small(
+                        "If you start from the landing page, results open automatically after you submit a task ID.",
+                        className="text-muted",
+                    ),
+                ]
+            ),
+        ]
+    )
+
+
 CONTROLS_CARD = dbc.Card(
     [
         dbc.CardHeader(html.H5("Input")),
@@ -757,8 +1139,8 @@ CONTROLS_CARD = dbc.Card(
                 ),
                 dbc.Checklist(
                     id="use-entropy",
-                    options=[{"label": "Use spectral entropy similarity in score", "value": "disabled"}],
-                    value=["disabled"],
+                    options=[{"label": "Use spectral entropy similarity in score", "value": "enabled"}],
+                    value=[],
                     switch=True,
                     className="mb-3",
                 ),
@@ -828,19 +1210,12 @@ dash_app.layout = html.Div([NAVBAR, BODY])
     [Input("url", "search")],
 )
 def determine_task_from_url(search):
-    try:
-        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
-    except Exception:
-        query_dict = {}
-
-    task_id = _get_url_param(query_dict, "task", "")
-    workflow_choice = _get_url_param(query_dict, "workflow", "auto")
-    entropy_param = _get_url_param(query_dict, "entropy", "1").strip().lower()
-    if workflow_choice not in SUPPORTED_WORKFLOWS:
-        workflow_choice = "auto"
-
-    use_entropy_value = [] if entropy_param in {"0", "false", "off", "no"} else ["enabled"]
-    return task_id, workflow_choice, use_entropy_value
+    query_state = _parse_dashboard_query(search)
+    return (
+        query_state["task_id"],
+        query_state["workflow_choice"],
+        query_state["use_entropy_value"],
+    )
 
 
 @dash_app.callback(
@@ -848,13 +1223,7 @@ def determine_task_from_url(search):
     [Input("url", "search")],
 )
 def toggle_controls_for_detail_view(search):
-    try:
-        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
-    except Exception:
-        query_dict = {}
-
-    detail_mode = _get_url_param(query_dict, "detail", "0") == "1"
-    if detail_mode:
+    if _parse_dashboard_query(search)["detail_mode"]:
         return {"display": "none"}
     return {"display": "block"}
 
@@ -864,22 +1233,15 @@ def toggle_controls_for_detail_view(search):
     [Input("url", "search")],
 )
 def render_detail_panel(search):
-    try:
-        query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
-    except Exception:
-        query_dict = {}
+    query_state = _parse_dashboard_query(search)
 
-    detail_mode = _get_url_param(query_dict, "detail", "0") == "1"
-    if not detail_mode:
+    if not query_state["detail_mode"]:
         return html.Div()
 
-    task_id = _get_url_param(query_dict, "task", "").strip()
-    scan = _get_url_param(query_dict, "scan", "").strip()
-    workflow_choice = _get_url_param(query_dict, "workflow", "auto").strip() or "auto"
-    entropy_param = _get_url_param(query_dict, "entropy", "1").strip().lower()
-    use_entropy_similarity = entropy_param not in {"0", "false", "off", "no"}
-    if workflow_choice not in SUPPORTED_WORKFLOWS:
-        workflow_choice = "auto"
+    task_id = query_state["task_id"]
+    scan = query_state["scan"]
+    workflow_choice = query_state["workflow_choice"]
+    use_entropy_similarity = query_state["use_entropy_similarity"]
 
     if not task_id or not scan:
         return dbc.Alert("Detail view requires task and scan query parameters.", color="warning")
@@ -897,21 +1259,33 @@ def render_detail_panel(search):
 
 @dash_app.callback(
     Output("results-panel", "children"),
-    [Input("run-analysis", "n_clicks")],
+    [Input("run-analysis", "n_clicks"), Input("url", "search")],
     [State("task-id", "value"), State("workflow-choice", "value"), State("use-entropy", "value")],
 )
-def run_confidence_analysis(_n_clicks, task_id, workflow_choice, use_entropy_value):
-    task_id = (task_id or "").strip()
-    workflow_choice = (workflow_choice or "auto").strip().lower()
-    use_entropy_similarity = isinstance(use_entropy_value, list) and ("enabled" in use_entropy_value)
+def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_entropy_value):
+    query_state = _parse_dashboard_query(search)
+    should_autorun = bool(query_state["task_id"]) and not query_state["detail_mode"] and (_n_clicks or 0) < 1
+
+    if should_autorun:
+        task_id = query_state["task_id"]
+        workflow_choice = query_state["workflow_choice"]
+        use_entropy_similarity = query_state["use_entropy_similarity"]
+    else:
+        task_id = (task_id or "").strip()
+        workflow_choice = (workflow_choice or "auto").strip().lower()
+        use_entropy_similarity = isinstance(use_entropy_value, list) and ("enabled" in use_entropy_value)
+
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
-    if not task_id:
-        return dbc.Alert("Enter a GNPS2 task ID to start.", color="secondary")
-
-    if _n_clicks is None or _n_clicks < 1:
+    if query_state["detail_mode"] and (_n_clicks or 0) < 1:
         return html.Div()
+
+    if not task_id:
+        return _build_intro_panel()
+
+    if (_n_clicks is None or _n_clicks < 1) and not should_autorun:
+        return _build_intro_panel()
 
     try:
         matches_df = _load_library_matches(task_id, workflow_choice)
