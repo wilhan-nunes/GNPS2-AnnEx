@@ -76,38 +76,6 @@
     font-weight: 500;
   }
 
-  /* ── Rank tabs ────────────────────────────────────────────── */
-  .tabs {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 1.5rem;
-    flex-wrap: wrap;
-  }
-  .tab {
-    padding: 6px 14px;
-    border-radius: 99px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid var(--border2);
-    background: transparent;
-    color: var(--muted);
-    font-family: var(--sans);
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .tab:hover { border-color: var(--accent); color: var(--text); }
-  .tab.active {
-    background: var(--blue-dim);
-    border-color: var(--blue);
-    color: var(--blue);
-  }
-  .tab.supporting {
-    background: var(--green-dim);
-    border-color: var(--green);
-    color: var(--green);
-  }
-
   /* ── Main layout: gauge + table ──────────────────────────── */
   .score-layout {
     display: grid;
