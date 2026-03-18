@@ -1,7 +1,7 @@
 Flask
 gunicorn
 plotly
-numpy<2
+numpy<2  # ms_entropy is not compatible with NumPy 2.0+
 pandas
 requests
 tqdm
@@ -14,5 +14,5 @@ dash-html-components
 dash-renderer
 dash-table
 rdkit-pypi
-git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage
+git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage@46779f30733553aeffd826782abbbe46bc960498
 ms_entropy
