@@ -2,7 +2,10 @@
 import base64
 from functools import lru_cache
 from io import BytesIO
+import logging
 import math
+import os
+import re
 import urllib.parse
 
 import dash
@@ -10,10 +13,12 @@ from dash import Input, Output, State, dash_table, dcc, html
 import dash_bootstrap_components as dbc
 import pandas as pd
 import requests
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw
 from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
+
+RDLogger.DisableLog("rdApp.error")
 
 from gnpsdata import taskresult
 from gnpsdata import workflow_classicnetworking
@@ -31,9 +36,10 @@ dash_app = dash.Dash(
 
 dash_app.title = "GNPS2 Library Confidence"
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_WORKFLOWS = {"auto", "classic", "fbmn", "librarysearch"}
-ENTROPY_USI_TIMEOUT_SEC = 8
+ENTROPY_USI_TIMEOUT_SEC = int(os.environ.get("ENTROPY_USI_TIMEOUT_SEC", 8))
 LIBRARY_RESULTS_CACHE_TIMEOUT_SEC = 86400
 
 
@@ -223,10 +229,9 @@ def _parse_library_class(value):
     try:
         numeric_value = int(float(text))
     except Exception:
-        for character in text:
-            if character in {"1", "2", "3"}:
-                numeric_value = int(character)
-                break
+        m = re.search(r"\b([123])\b", text)
+        if m:
+            numeric_value = int(m.group(1))
 
     if numeric_value in {1, 2, 3}:
         return numeric_value
@@ -261,7 +266,8 @@ def _get_entropy_similarity_from_usis(query_usi, library_usi):
             entropy_similarity_pair,
             fetch_spectrum,
         )
-    except BaseException:
+    except Exception:
+        logger.exception("Failed to import spectral_entropy_v2")
         return None
 
     try:
@@ -280,6 +286,7 @@ def _get_entropy_similarity_from_usis(query_usi, library_usi):
         entropy_similarity = float(entropy_similarity)
         return max(0.0, min(1.0, entropy_similarity))
     except Exception:
+        logger.warning("Entropy similarity failed for query=%s library=%s", query_usi, library_usi, exc_info=True)
         return None
 
 
@@ -471,7 +478,8 @@ def _compute_scan_level_confidence(
         structure_hits = scan_df[scan_df["_support_group_key"] == support_group_key]
         representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
         structure_key = representative_row.get("_structure_key", "UNKNOWN_STRUCTURE")
-        top_compound = structure_hits["_compound"].mode().iloc[0]
+        _mode = structure_hits["_compound"].mode()
+        top_compound = _mode.iloc[0] if len(_mode) > 0 else ""
 
         support_fraction = best["count"] / total_matches if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
@@ -500,6 +508,7 @@ def _compute_scan_level_confidence(
             + 0.10 * max_cosine
             + 0.15 * class_quality
         )
+        confidence_score = min(100.0, max(0.0, confidence_score))
         confidence_label, badge_color = _confidence_category(confidence_score)
 
         summary_rows.append(
