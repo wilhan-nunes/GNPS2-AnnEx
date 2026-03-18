@@ -215,6 +215,14 @@ def _annotate_support_groups(df):
     work_df["_support_group_key"] = work_df["_support_group_key"].replace("", pd.NA)
     work_df["_support_group_key"] = work_df["_support_group_key"].fillna(work_df["_structure_key"])
 
+    # Rows with no resolvable structure must not cluster together — each gets a
+    # unique sentinel key so they never artificially inflate support counts.
+    unknown_mask = work_df["_support_group_key"] == "UNKNOWN_STRUCTURE"
+    if unknown_mask.any():
+        work_df.loc[unknown_mask, "_support_group_key"] = [
+            f"UNKNOWN_STRUCTURE_{i}" for i in work_df.index[unknown_mask]
+        ]
+
     return work_df
 
 

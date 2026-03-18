@@ -430,6 +430,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     cosine_col = _find_first_column(scan_df, ["MQScore", "Cosine", "cosine"])
     compound_col = _find_first_column(scan_df, ["Compound_Name", "compound_name", "Compound Name"])
     library_usi_col = _find_first_column(scan_df, ["library_usi", "LibraryUSI", "library usi"])
+    library_name_col = _find_first_column(scan_df, ["LibraryName", "library_name", "Library Name"])
     spectrum_file_col = _find_first_column(scan_df, ["SpectrumFile"])
     smiles_col = _find_first_column(scan_df, ["Smiles", "SMILES", "smiles"])
     inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
@@ -443,6 +444,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     scan_df["_cosine"] = pd.to_numeric(scan_df[cosine_col], errors="coerce").fillna(0.0) if cosine_col else 0.0
     scan_df["_compound"] = scan_df[compound_col].astype(str) if compound_col else "Unknown"
     scan_df["_library_usi"] = scan_df[library_usi_col].astype(str) if library_usi_col else ""
+    scan_df["_library_name"] = scan_df[library_name_col].astype(str) if library_name_col else ""
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
@@ -468,6 +470,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     for _, row in detail_rows.iterrows():
         compound = _to_text(row.get("_compound")) or "Unknown Compound"
         lib_usi = _to_text(row.get("_library_usi"))
+        lib_name = _to_text(row.get("_library_name"))
         smiles = _to_text(row.get("_smiles"))
         inchikey = _to_text(row.get("_inchikey"))
         inchi = _to_text(row.get("_inchi"))
@@ -484,18 +487,22 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
             html.H6(compound),
             html.Div(f"Cosine: {round(float(cosine), 4)}"),
             html.Small(
+                f"Library: {lib_name}" if lib_name else "Library name unavailable",
+                className="text-muted",
+            ),
+            html.Br(),
+            html.Small(
                 f"Library USI: {normalized_library_usi}" if normalized_library_usi else "Library USI unavailable",
                 className="text-muted",
             ),
             html.Br(),
-            html.Small(f"InChIKey: {inchikey}" if inchikey else "InChIKey unavailable", className="text-muted"),
+            html.Small(f"InChIKey: {inchikey}" if (inchikey != "None" and inchikey)  else "InChIKey unavailable", className="text-muted"),
             html.Br(),
             html.Small(
                 "SMILES/InChI available" if (smiles or inchi) else "SMILES/InChI unavailable",
                 className="text-muted",
             ),
             html.Hr(),
-            html.H6("Mirror Plot"),
             html.Div(
                 html.A("Open mirror plot", href=mirror_url, target="_blank")
                 if mirror_url
