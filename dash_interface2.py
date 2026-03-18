@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 from rdkit import Chem
 from rdkit.Chem import Draw
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem.Scaffolds import MurckoScaffold
 
 from gnpsdata import taskresult
 from gnpsdata import workflow_classicnetworking
@@ -127,12 +129,89 @@ def _canonical_structure_key(row):
     return "UNKNOWN_STRUCTURE"
 
 
+@lru_cache(maxsize=8192)
+def _build_positional_isomer_group_key(inchi="", smiles=""):
+    inchi = _to_text(inchi)
+    smiles = _to_text(smiles)
+
+    mol = None
+    if inchi:
+        try:
+            mol = Chem.MolFromInchi(inchi)
+        except Exception:
+            mol = None
+    if mol is None and smiles:
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+        except Exception:
+            mol = None
+
+    if mol is not None:
+        try:
+            mol = Chem.Mol(mol)
+            Chem.RemoveStereochemistry(mol)
+            mol = Chem.RemoveHs(mol)
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+
+            scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+            scaffold_smiles = ""
+            sidechain_fragments = []
+            if scaffold is not None and scaffold.GetNumAtoms() > 0:
+                scaffold_smiles = Chem.MolToSmiles(scaffold, canonical=True)
+                replaced = Chem.ReplaceCore(mol, scaffold)
+                if replaced is not None and replaced.GetNumAtoms() > 0:
+                    for fragment in Chem.GetMolFrags(replaced, asMols=True, sanitizeFrags=False):
+                        try:
+                            Chem.SanitizeMol(fragment)
+                        except Exception:
+                            pass
+                        sidechain_fragments.append(_canonicalize_fragment_smiles(fragment))
+
+            if scaffold_smiles:
+                fragment_key = "|".join(sorted(sidechain_fragments))
+                return f"POSISO|{formula}|{scaffold_smiles}|{fragment_key}"
+        except Exception:
+            pass
+
+    return ""
+
+
 def _confidence_category(score):
     if score >= 80:
         return "Reliable", "success"
     if score >= 55:
         return "Less Reliable", "warning"
     return "Unreliable", "danger"
+
+
+def _annotate_support_groups(df):
+    work_df = df.copy()
+    work_df["_positional_group_key"] = work_df.apply(
+        lambda row: _build_positional_isomer_group_key(
+            row.get("INCHI", ""),
+            row.get("Smiles", ""),
+        ),
+        axis=1,
+    )
+
+    exact_to_positional = {}
+    if "_structure_key" in work_df.columns:
+        positional_rows = work_df[work_df["_positional_group_key"] != ""]
+        if len(positional_rows) > 0:
+            exact_to_positional = (
+                positional_rows.groupby("_structure_key")["_positional_group_key"]
+                .agg(lambda series: series.mode().iloc[0] if len(series.mode()) > 0 else series.iloc[0])
+                .to_dict()
+            )
+
+    work_df["_support_group_key"] = work_df["_structure_key"].map(exact_to_positional)
+    if "_positional_group_key" in work_df.columns:
+        work_df["_support_group_key"] = work_df["_support_group_key"].fillna(work_df["_positional_group_key"])
+    work_df["_support_group_key"] = work_df["_support_group_key"].fillna("")
+    work_df["_support_group_key"] = work_df["_support_group_key"].replace("", pd.NA)
+    work_df["_support_group_key"] = work_df["_support_group_key"].fillna(work_df["_structure_key"])
+
+    return work_df
 
 
 def _parse_library_class(value):
@@ -349,6 +428,7 @@ def _compute_scan_level_confidence(
 
     work_df["_cosine"] = pd.to_numeric(work_df[cosine_col], errors="coerce").fillna(0.0)
     work_df["_structure_key"] = work_df.apply(_canonical_structure_key, axis=1)
+    work_df = _annotate_support_groups(work_df)
     work_df["_compound"] = (
         work_df[compound_col].astype(str)
         if compound_col is not None
@@ -377,9 +457,9 @@ def _compute_scan_level_confidence(
         total_matches = len(scan_df)
 
         grouped = (
-            scan_df.groupby("_structure_key", as_index=False)
+            scan_df.groupby("_support_group_key", as_index=False)
             .agg(
-                count=("_structure_key", "size"),
+                count=("_support_group_key", "size"),
                 mean_cosine=("_cosine", "mean"),
                 max_cosine=("_cosine", "max"),
             )
@@ -387,8 +467,10 @@ def _compute_scan_level_confidence(
         )
 
         best = grouped.iloc[0]
-        structure_key = best["_structure_key"]
-        structure_hits = scan_df[scan_df["_structure_key"] == structure_key]
+        support_group_key = best["_support_group_key"]
+        structure_hits = scan_df[scan_df["_support_group_key"] == support_group_key]
+        representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
+        structure_key = representative_row.get("_structure_key", "UNKNOWN_STRUCTURE")
         top_compound = structure_hits["_compound"].mode().iloc[0]
 
         support_fraction = best["count"] / total_matches if total_matches else 0.0
@@ -402,7 +484,6 @@ def _compute_scan_level_confidence(
         entropy_similarity = None
         entropy_source = "disabled"
         if use_entropy_similarity:
-            representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
             representative_library_usi = _normalize_library_usi(representative_row.get("_library_usi"))
             representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
             query_usi = _build_query_usi(task_id, scan, resolved_workflow, spectrum_file=representative_spectrum_file)
@@ -426,6 +507,7 @@ def _compute_scan_level_confidence(
                 "scan": scan,
                 "top_compound": top_compound,
                 "structure_key": structure_key,
+                "support_group_key": support_group_key,
                 "supporting_matches": int(best["count"]),
                 "total_matches": int(total_matches),
                 "mean_cosine": round(mean_cosine, 4),
@@ -539,6 +621,15 @@ def _describe_svg_arc(cx, cy, radius, start_deg, end_deg):
     )
 
 
+def _canonicalize_fragment_smiles(fragment):
+    fragment = Chem.Mol(fragment)
+    for atom in fragment.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            atom.SetIsotope(0)
+            atom.SetAtomMapNum(0)
+    return Chem.MolToSmiles(fragment, canonical=True)
+
+
 def _build_reliability_gauge_data_uri(score, color):
     score_fraction = max(0.0, min(1.0, float(score) / 100.0))
     cx = 70
@@ -583,6 +674,7 @@ def _build_reliability_breakdown_panel(
     class_3_hits = int(score_row["class_3_hits"])
     top_compound = _to_text(score_row["top_compound"]) or "Unknown Compound"
     structure_key = _to_text(score_row["structure_key"])
+    support_group_key = _to_text(score_row.get("support_group_key"))
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
 
     similarity_formula = (
@@ -599,10 +691,10 @@ def _build_reliability_breakdown_panel(
     metrics = [
         {
             "label": "Structure agreement",
-            "formula": "supporting hits / total hits × 50%",
+            "formula": "same planar structure or positional-isomer family / total hits × 50%",
             "weight": 0.50,
             "value": support_fraction,
-            "raw_primary": f"{supporting_matches} / {total_matches} hits support the same core structure",
+            "raw_primary": f"{supporting_matches} / {total_matches} hits support the same planar structure or positional-isomer family",
             "raw_secondary": _truncate_text(structure_key, max_length=48),
         },
         {
@@ -649,7 +741,7 @@ def _build_reliability_breakdown_panel(
             continue
         seen_compounds.add(compound)
         is_primary = compound == top_compound
-        supports_consensus = _to_text(row.get("_structure_key")) == structure_key
+        supports_consensus = _to_text(row.get("_support_group_key")) == support_group_key
         pill_class = "tab"
         if is_primary:
             pill_class += " active"
@@ -775,7 +867,7 @@ def _build_reliability_breakdown_panel(
                             html.Div(className="gauge-divider"),
                             html.Div(top_compound, className="compound-name"),
                             html.Div(
-                                f"Consensus structure key: {_truncate_text(structure_key, max_length=42)}",
+                                f"Representative structure key: {_truncate_text(structure_key, max_length=42)}",
                                 className="gauge-context",
                             ),
                         ],
@@ -980,6 +1072,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
     scan_df["_structure_key"] = scan_df.apply(_canonical_structure_key, axis=1)
+    scan_df = _annotate_support_groups(scan_df)
 
     detail_rows = (
         scan_df.sort_values("_cosine", ascending=False)
@@ -1148,7 +1241,7 @@ CONTROLS_CARD = dbc.Card(
                 html.Hr(),
                 html.P(
                     "Confidence is computed per scan using the fraction of supporting matches "
-                    "for the same core structure, entropy similarity, max cosine, and Library_Class quality.",
+                    "for the same planar structure or positional-isomer family, entropy similarity, max cosine, and Library_Class quality.",
                     className="mb-1",
                 ),
                 html.Small(
@@ -1355,8 +1448,8 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
         columns=[
             {"name": "Scan", "id": "scan"},
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
-            {"name": "Core Structure Key", "id": "structure_key"},
-            {"name": "Support (same structure / total)", "id": "support"},
+            {"name": "Representative Structure Key", "id": "structure_key"},
+            {"name": "Support (same planar structure or positional-isomer family / total)", "id": "support"},
             {"name": "Entropy Similarity", "id": "entropy_similarity"},
             {"name": "Entropy Source", "id": "entropy_source"},
             {"name": "Mean Cosine", "id": "mean_cosine"},
