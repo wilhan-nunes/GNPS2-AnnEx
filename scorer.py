@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import logging
-import re
 from functools import lru_cache
 
 import pandas as pd
@@ -15,6 +14,7 @@ from normalizer import (
     _normalize_library_usi,
     _to_text,
 )
+from tanimoto import scan_tanimoto
 
 logger = logging.getLogger(__name__)
 
@@ -26,36 +26,6 @@ def _confidence_category(score):
         return "Less Reliable", "warning"
     return "Unreliable", "danger"
 
-
-def _parse_library_class(value):
-    text = _to_text(value)
-    if not text:
-        return None
-
-    numeric_value = None
-    try:
-        numeric_value = int(float(text))
-    except Exception:
-        m = re.search(r"\b([123])\b", text)
-        if m:
-            numeric_value = int(m.group(1))
-
-    if numeric_value in {1, 2, 3}:
-        return numeric_value
-    return None
-
-
-def _library_class_to_quality_score(library_class_value):
-    # GNPS library classes: 1 = highest confidence source, 3 = lower confidence source.
-    class_quality_map = {
-        1: 1.00,
-        2: 0.65,
-        3: 0.30,
-    }
-    if library_class_value in class_quality_map:
-        return class_quality_map[library_class_value]
-    # Neutral fallback when class is missing/unparseable.
-    return 0.50
 
 
 @lru_cache(maxsize=4096)
@@ -109,10 +79,7 @@ def _compute_scan_level_confidence(
     compound_col = _find_first_column(df, ["Compound_Name", "compound_name", "Compound Name"])
     library_usi_col = _find_first_column(df, ["library_usi", "LibraryUSI", "library usi"])
     spectrum_file_col = _find_first_column(df, ["SpectrumFile"])
-    library_class_col = _find_first_column(
-        df,
-        ["Library_Class", "library_class", "Library Class", "LibraryClass", "libraryclass"],
-    )
+    smiles_col = _find_first_column(df, ["Smiles", "SMILES", "smiles"])
 
     if scan_col is None:
         raise ValueError("Could not find scan column (#Scan# / scan / Scan) in library results.")
@@ -142,12 +109,6 @@ def _compute_scan_level_confidence(
         if spectrum_file_col is not None
         else ""
     )
-    work_df["_library_class"] = (
-        work_df[library_class_col].apply(_parse_library_class)
-        if library_class_col is not None
-        else None
-    )
-    work_df["_library_class_quality"] = work_df["_library_class"].apply(_library_class_to_quality_score)
     resolved_workflow = _infer_resolved_workflow(work_df, workflow_choice)
 
     summary_rows = []
@@ -175,11 +136,12 @@ def _compute_scan_level_confidence(
         support_fraction = best["count"] / total_matches if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
-        class_quality = float(structure_hits["_library_class_quality"].mean()) if len(structure_hits) else 0.5
-        class_counts = structure_hits["_library_class"].value_counts(dropna=True).to_dict()
-        class_1_hits = int(class_counts.get(1, 0))
-        class_2_hits = int(class_counts.get(2, 0))
-        class_3_hits = int(class_counts.get(3, 0))
+
+        # Tanimoto structural similarity (ECFP4, mean pairwise across unique SMILES).
+        # Falls back to support_fraction when fewer than 2 unique valid SMILES exist.
+        scan_smiles = scan_df[smiles_col].tolist() if smiles_col is not None else []
+        tanimoto_score, tanimoto_source = scan_tanimoto(scan_smiles, support_fraction)
+
         entropy_similarity = None
         entropy_source = "disabled"
         if use_entropy_similarity:
@@ -193,11 +155,13 @@ def _compute_scan_level_confidence(
             if use_entropy_similarity:
                 entropy_source = "mean_cosine_fallback"
 
+        # Weights: structure_agreement 50%, tanimoto 15%, spectral_similarity 25%,
+        #          max_cosine 10%.
         confidence_score = 100.0 * (
             0.50 * support_fraction
+            + 0.15 * tanimoto_score
             + 0.25 * entropy_similarity
             + 0.10 * max_cosine
-            + 0.15 * class_quality
         )
         confidence_score = min(100.0, max(0.0, confidence_score))
         confidence_label, badge_color = _confidence_category(confidence_score)
@@ -214,10 +178,8 @@ def _compute_scan_level_confidence(
                 "max_cosine": round(max_cosine, 4),
                 "entropy_similarity": round(float(entropy_similarity), 4),
                 "entropy_source": entropy_source,
-                "library_class_quality": round(class_quality, 4),
-                "class_1_hits": class_1_hits,
-                "class_2_hits": class_2_hits,
-                "class_3_hits": class_3_hits,
+                "tanimoto_score": round(float(tanimoto_score), 4),
+                "tanimoto_source": tanimoto_source,
                 "confidence_score": round(confidence_score, 1),
                 "confidence_label": confidence_label,
                 "badge_color": badge_color,
