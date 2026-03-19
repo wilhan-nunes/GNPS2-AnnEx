@@ -3,14 +3,18 @@ import logging
 import urllib.parse
 
 import dash
-from dash import Input, Output, State, dash_table, dcc, html
+from dash import Input, Output, State, dash_table, dcc, html, no_update
 import dash_bootstrap_components as dbc
 
 from app import app
 from components import _build_detail_panel, _build_intro_panel
 from constants import SUPPORTED_WORKFLOWS
+import io
+
+import pandas as pd
+
 from loader import _load_library_matches
-from normalizer import _infer_resolved_workflow
+from normalizer import _find_first_column, _infer_resolved_workflow
 from scorer import _compute_scan_level_confidence
 
 
@@ -113,7 +117,10 @@ CONTROLS_CARD = dbc.Card(
                     className="mb-1",
                 ),
                 html.Small(
-                    "Score weights: support 50%, entropy similarity 25% (fallback to mean cosine if unavailable or disabled), max cosine 10%, Library_Class quality 15% (Class 1 > 2 > 3).",
+                    "Score weights: structure agreement 50%, Tanimoto structural similarity 15% "
+                    "(ECFP4 mean pairwise; fallback to structure agreement when SMILES unavailable), "
+                    "entropy similarity 25% (fallback to mean cosine if unavailable or disabled), "
+                    "max cosine 10%.",
                     className="text-muted d-block",
                 ),
                 html.Small(
@@ -133,6 +140,8 @@ CONTROLS_CARD = dbc.Card(
 BODY = dbc.Container(
     [
         dcc.Location(id="url", refresh=False),
+        dcc.Store(id="matches-store", storage_type="memory"),
+        dcc.Store(id="run-params-store", storage_type="memory"),
         dbc.Row(
             [
                 dbc.Col(html.Div(CONTROLS_CARD, id="controls-container"), md=12),
@@ -149,6 +158,19 @@ BODY = dbc.Container(
             [
                 dbc.Col(
                     dcc.Loading(
+                        id="loading-status",
+                        type="dot",
+                        children=html.Div(id="load-status"),
+                    ),
+                    md=12,
+                ),
+            ],
+            style={"marginTop": 12},
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    dcc.Loading(
                         id="loading-output",
                         type="default",
                         children=html.Div(id="results-panel"),
@@ -156,7 +178,7 @@ BODY = dbc.Container(
                     md=12,
                 ),
             ],
-            style={"marginTop": 12},
+            style={"marginTop": 4},
         ),
     ],
     fluid=True,
@@ -219,11 +241,16 @@ def render_detail_panel(search):
 
 
 @dash_app.callback(
-    Output("results-panel", "children"),
+    [
+        Output("matches-store", "data"),
+        Output("run-params-store", "data"),
+        Output("load-status", "children"),
+    ],
     [Input("run-analysis", "n_clicks"), Input("url", "search")],
     [State("task-id", "value"), State("workflow-choice", "value"), State("use-entropy", "value")],
 )
-def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_entropy_value):
+def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, use_entropy_value):
+    """Stage 1 — fetch library matches and report what was found."""
     query_state = _parse_dashboard_query(search)
     should_autorun = bool(query_state["task_id"]) and not query_state["detail_mode"] and (_n_clicks or 0) < 1
 
@@ -240,17 +267,67 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
         workflow_choice = "auto"
 
     if query_state["detail_mode"] and (_n_clicks or 0) < 1:
-        return html.Div()
+        return no_update, no_update, no_update
 
-    if not task_id:
-        return _build_intro_panel()
-
-    if (_n_clicks is None or _n_clicks < 1) and not should_autorun:
-        return _build_intro_panel()
+    if not task_id or ((_n_clicks is None or _n_clicks < 1) and not should_autorun):
+        return no_update, no_update, html.Div()
 
     try:
         matches_df = _load_library_matches(task_id, workflow_choice)
         resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
+    except Exception as exc:
+        return no_update, no_update, dbc.Alert(str(exc), color="danger")
+
+    scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
+    n_matches = len(matches_df)
+    n_scans = matches_df[scan_col].nunique() if scan_col else "?"
+
+    entropy_note = ""
+    if use_entropy_similarity:
+        entropy_note = (
+            f" Spectral entropy similarity is ON — computing USI comparisons for {n_scans} scan(s). "
+            "This may take several minutes for large datasets."
+        )
+
+    status = dbc.Alert(
+        [
+            html.Strong(f"Loaded {n_matches:,} library matches across {n_scans:,} scan(s). "),
+            html.Span("Computing confidence scores"),
+            html.Span(" (structure agreement, Tanimoto ECFP4, cosine, library class)"),
+            html.Span(entropy_note, className="text-muted"),
+            html.Span(" — results will appear below.", className="text-muted"),
+        ],
+        color="info",
+        className="mb-0 py-2",
+    )
+
+    params = {
+        "task_id": task_id,
+        "workflow_choice": workflow_choice,
+        "resolved_workflow": resolved_workflow,
+        "use_entropy_similarity": use_entropy_similarity,
+    }
+
+    return matches_df.to_json(orient="split"), params, status
+
+
+@dash_app.callback(
+    Output("results-panel", "children"),
+    [Input("matches-store", "data"), Input("run-params-store", "data")],
+    prevent_initial_call=True,
+)
+def compute_and_render_scores(matches_json, params):
+    """Stage 2 — score all scans and render the results table."""
+    if matches_json is None or params is None:
+        return html.Div()
+
+    task_id = params["task_id"]
+    workflow_choice = params["workflow_choice"]
+    resolved_workflow = params["resolved_workflow"]
+    use_entropy_similarity = params["use_entropy_similarity"]
+
+    try:
+        matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
         summary_df = _compute_scan_level_confidence(
             matches_df,
             task_id=task_id,
@@ -261,10 +338,7 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
         return dbc.Alert(str(exc), color="danger")
 
     if len(summary_df) == 0:
-        return dbc.Alert(
-            "No library matches were found for this task.",
-            color="warning",
-        )
+        return dbc.Alert("No library matches were found for this task.", color="warning")
 
     badge_counts = {
         "Reliable": int((summary_df["confidence_label"] == "Reliable").sum()),
@@ -275,14 +349,6 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
     table_df = summary_df.copy()
     table_df["support"] = (
         table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
-    )
-    table_df["class_profile"] = (
-        "C1:"
-        + table_df["class_1_hits"].astype(str)
-        + " | C2:"
-        + table_df["class_2_hits"].astype(str)
-        + " | C3:"
-        + table_df["class_3_hits"].astype(str)
     )
     table_df["compound_link"] = table_df.apply(
         lambda row: (
@@ -299,12 +365,12 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
             "compound_link",
             "structure_key",
             "support",
+            "tanimoto_score",
+            "tanimoto_source",
             "entropy_similarity",
             "entropy_source",
             "mean_cosine",
             "max_cosine",
-            "library_class_quality",
-            "class_profile",
             "confidence_score",
             "confidence_label",
         ]
@@ -317,13 +383,13 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
             {"name": "Scan", "id": "scan"},
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Representative Structure Key", "id": "structure_key"},
-            {"name": "Support (same planar structure or positional-isomer family / total)", "id": "support"},
+            {"name": "Support (planar structure or isomer family / total)", "id": "support"},
+            {"name": "Tanimoto (ECFP4)", "id": "tanimoto_score"},
+            {"name": "Tanimoto Source", "id": "tanimoto_source"},
             {"name": "Entropy Similarity", "id": "entropy_similarity"},
             {"name": "Entropy Source", "id": "entropy_source"},
             {"name": "Mean Cosine", "id": "mean_cosine"},
             {"name": "Max Cosine", "id": "max_cosine"},
-            {"name": "Library Class Quality", "id": "library_class_quality"},
-            {"name": "Class Hits (1/2/3)", "id": "class_profile"},
             {"name": "Score", "id": "confidence_score"},
             {"name": "Confidence", "id": "confidence_label"},
         ],
@@ -365,6 +431,18 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
                 "fontWeight": "600",
             },
             {
+                "if": {"column_id": "tanimoto_score"},
+                "width": "100px",
+                "maxWidth": "100px",
+                "textAlign": "center",
+            },
+            {
+                "if": {"column_id": "tanimoto_source"},
+                "width": "155px",
+                "maxWidth": "155px",
+                "textAlign": "center",
+            },
+            {
                 "if": {"column_id": "entropy_similarity"},
                 "width": "115px",
                 "maxWidth": "115px",
@@ -374,18 +452,6 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
                 "if": {"column_id": "entropy_source"},
                 "width": "150px",
                 "maxWidth": "150px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "library_class_quality"},
-                "width": "120px",
-                "maxWidth": "120px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "class_profile"},
-                "width": "130px",
-                "maxWidth": "130px",
                 "textAlign": "center",
             },
             {
@@ -429,8 +495,7 @@ def run_confidence_analysis(_n_clicks, search, task_id, workflow_choice, use_ent
                     dbc.CardHeader(html.H5("Confidence Summary")),
                     dbc.CardBody(
                         [
-                            html.P(f"Task: {task_id}"),
-                            html.P(f"Entropy scoring: {'Enabled' if use_entropy_similarity else 'Disabled'}"),
+                            html.P(f"Task: {task_id} · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}"),
                             dbc.Badge(f"Reliable: {badge_counts['Reliable']}", color="success", className="me-2"),
                             dbc.Badge(
                                 f"Less Reliable: {badge_counts['Less Reliable']}",

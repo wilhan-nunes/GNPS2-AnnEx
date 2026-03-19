@@ -46,6 +46,16 @@ def _format_entropy_source_label(entropy_source):
     return source_label_map.get(_to_text(entropy_source), "Similarity evidence")
 
 
+def _format_tanimoto_source_label(tanimoto_source):
+    source_label_map = {
+        "tanimoto_ecfp4": "Tanimoto (ECFP4, mean pairwise)",
+        "single_structure": "Tanimoto (single structure — perfect consensus)",
+        "structure_agreement_fallback": "Structure agreement fallback (too few SMILES for Tanimoto)",
+        "unavailable": "Unavailable (RDKit error)",
+    }
+    return source_label_map.get(_to_text(tanimoto_source), "Tanimoto structural similarity")
+
+
 def _metric_bar_color(value):
     if value >= 0.75:
         return "#1d9a6c"
@@ -136,12 +146,10 @@ def _build_reliability_breakdown_panel(
     support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
     similarity_value = float(score_row["entropy_similarity"])
     entropy_source = _to_text(score_row["entropy_source"])
-    class_quality = float(score_row["library_class_quality"])
+    tanimoto_score = float(score_row["tanimoto_score"])
+    tanimoto_source = _to_text(score_row["tanimoto_source"])
     max_cosine = float(score_row["max_cosine"])
     mean_cosine = float(score_row["mean_cosine"])
-    class_1_hits = int(score_row["class_1_hits"])
-    class_2_hits = int(score_row["class_2_hits"])
-    class_3_hits = int(score_row["class_3_hits"])
     top_compound = _to_text(score_row["top_compound"]) or "Unknown Compound"
     structure_key = _to_text(score_row["structure_key"])
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
@@ -157,6 +165,17 @@ def _build_reliability_breakdown_panel(
         else "Used because entropy was unavailable or disabled"
     )
 
+    tanimoto_label = _format_tanimoto_source_label(tanimoto_source)
+    tanimoto_secondary = (
+        "Mean pairwise Tanimoto (ECFP4, r=2, 2048-bit) across unique SMILES in this scan"
+        if tanimoto_source == "tanimoto_ecfp4"
+        else "Fell back to hit-count structure agreement (fewer than 2 unique valid SMILES)"
+        if tanimoto_source == "structure_agreement_fallback"
+        else "All hits agree on one structure — no pairs to compare"
+        if tanimoto_source == "single_structure"
+        else "RDKit fingerprint computation unavailable"
+    )
+
     metrics = [
         {
             "label": "Structure agreement",
@@ -165,6 +184,14 @@ def _build_reliability_breakdown_panel(
             "value": support_fraction,
             "raw_primary": f"{supporting_matches} / {total_matches} hits support the same planar structure or positional-isomer family",
             "raw_secondary": _truncate_text(structure_key, max_length=48),
+        },
+        {
+            "label": "Tanimoto structural similarity",
+            "formula": f"mean pairwise ECFP4 Tanimoto × 15% · source: {tanimoto_label}",
+            "weight": 0.15,
+            "value": tanimoto_score,
+            "raw_primary": f"{tanimoto_score:.4f} · {tanimoto_label}",
+            "raw_secondary": tanimoto_secondary,
         },
         {
             "label": "Spectral similarity",
@@ -182,23 +209,15 @@ def _build_reliability_breakdown_panel(
             "raw_primary": f"{max_cosine:.4f} strongest library hit",
             "raw_secondary": f"Mean cosine across supporting hits: {mean_cosine:.4f}",
         },
-        {
-            "label": "Library class quality",
-            "formula": "mean mapped class score × 15%",
-            "weight": 0.15,
-            "value": class_quality,
-            "raw_primary": f"{class_quality:.4f} quality score",
-            "raw_secondary": f"C1 {class_1_hits} · C2 {class_2_hits} · C3 {class_3_hits}",
-        },
     ]
 
     metadata_fields = [
         ("Task ID", task_id),
         ("Scan", scan),
         ("Workflow", _format_workflow_label(resolved_workflow or workflow_choice)),
-        ("Similarity source", _format_entropy_source_label(entropy_source)),
+        ("Spectral sim. source", _format_entropy_source_label(entropy_source)),
+        ("Tanimoto source", tanimoto_label),
         ("Structure support", f"{supporting_matches} / {total_matches}"),
-        ("Class profile", f"C1 {class_1_hits} · C2 {class_2_hits} · C3 {class_3_hits}"),
     ]
 
     metric_rows = []
@@ -348,7 +367,9 @@ def _build_reliability_breakdown_panel(
                         ]
                     ),
                     html.Span(
-                        "Similarity evidence uses spectral entropy when available; otherwise mean cosine is used.",
+                        "Spectral similarity uses spectral entropy when available, otherwise mean cosine. "
+                        "Tanimoto uses ECFP4 mean pairwise similarity when ≥ 2 unique SMILES are present, "
+                        "otherwise falls back to the hit-count structure agreement fraction.",
                         className="legend-note",
                     ),
                 ],
@@ -551,7 +572,7 @@ def _build_intro_panel():
                     html.Ul(
                         [
                             html.Li("Supported workflows: FBMN, Classical Networking, and Library Search."),
-                            html.Li("Each scan is scored from structure agreement, spectral similarity, and library class quality."),
+                            html.Li("Each scan is scored from structure agreement, Tanimoto structural similarity, spectral similarity, and best cosine score."),
                             html.Li("Open a proposed compound to inspect the detailed evidence and mirror-plot links."),
                         ],
                         className="mb-2",
