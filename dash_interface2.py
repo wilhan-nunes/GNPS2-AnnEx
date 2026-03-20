@@ -71,69 +71,124 @@ NAVBAR = dbc.Navbar(
 
 
 CONTROLS_CARD = dbc.Card(
+    dbc.CardBody(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Label("Task ID", html_for="task-id", className="small fw-semibold text-uppercase text-muted mb-1"),
+                            dbc.Input(
+                                id="task-id",
+                                placeholder="Enter FBMN, Classical Networking, or Library Search task ID",
+                                value="",
+                                style={"borderRadius": "10px", "borderColor": "rgba(0,0,0,0.12)"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Label("Workflow", html_for="workflow-choice", className="small fw-semibold text-uppercase text-muted mb-1"),
+                            dbc.Select(
+                                id="workflow-choice",
+                                options=[
+                                    {"label": "Auto-detect", "value": "auto"},
+                                    {"label": "Classical Networking", "value": "classic"},
+                                    {"label": "FBMN", "value": "fbmn"},
+                                    {"label": "Library Search", "value": "librarysearch"},
+                                ],
+                                value="auto",
+                                style={"borderRadius": "10px", "borderColor": "rgba(0,0,0,0.12)"},
+                            ),
+                        ],
+                        md=3,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Label("\u00a0", className="d-block small"),
+                            dbc.Checklist(
+                                id="use-entropy",
+                                options=[{"label": "Entropy similarity", "value": "enabled"}],
+                                value=[],
+                                switch=True,
+                                className="mt-1",
+                            ),
+                        ],
+                        md=3,
+                        className="d-flex flex-column justify-content-end",
+                    ),
+                ],
+                className="g-3",
+            ),
+            html.Div(
+                [
+                    dbc.Button(
+                        "Load annotations",
+                        id="run-analysis",
+                        color="primary",
+                        n_clicks=0,
+                        style={"borderRadius": "999px", "paddingLeft": "1.5rem", "paddingRight": "1.5rem"},
+                    ),
+                    dbc.Button(
+                        "How does scoring work?",
+                        id="open-info-modal",
+                        color="link",
+                        size="sm",
+                        className="text-muted ms-2",
+                        style={"textDecoration": "none"},
+                    ),
+                ],
+                className="mt-3",
+            ),
+        ],
+        className="p-4",
+    ),
+    className="border-0 shadow-sm",
+    style={"borderRadius": "18px", "background": "rgba(255,255,255,0.9)"},
+)
+
+
+INFO_MODAL = dbc.Modal(
     [
-        dbc.CardHeader(html.H5("Input")),
-        dbc.CardBody(
+        dbc.ModalHeader(dbc.ModalTitle("How scoring works"), close_button=True),
+        dbc.ModalBody(
             [
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("GNPS2 Task ID"),
-                        dbc.Input(
-                            id="task-id",
-                            placeholder="Enter FBMN, Classical Networking, or Library Search task ID",
-                            value="",
-                        ),
-                    ],
-                    className="mb-3",
-                ),
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("Workflow"),
-                        dbc.Select(
-                            id="workflow-choice",
-                            options=[
-                                {"label": "Auto", "value": "auto"},
-                                {"label": "Classical Networking", "value": "classic"},
-                                {"label": "FBMN", "value": "fbmn"},
-                                {"label": "Library Search", "value": "librarysearch"},
-                            ],
-                            value="auto",
-                        ),
-                    ],
-                    className="mb-3",
-                ),
-                dbc.Checklist(
-                    id="use-entropy",
-                    options=[{"label": "Use spectral entropy similarity in score", "value": "enabled"}],
-                    value=[],
-                    switch=True,
-                    className="mb-3",
-                ),
-                dbc.Button("Load Library Matches", id="run-analysis", color="primary", n_clicks=0),
-                html.Hr(),
                 html.P(
-                    "Evidence score is computed per scan from structure agreement, Tanimoto structural similarity, "
-                    "spectral similarity, and best cosine score.",
-                    className="mb-1",
-                ),
-                html.Small(
-                    "Score weights: structure agreement 50%, Tanimoto structural similarity 15% "
-                    "(ECFP4 mean pairwise; fallback to structure agreement when SMILES unavailable), "
-                    "entropy similarity 25% (fallback to mean cosine if unavailable or disabled), "
-                    "max cosine 10%.",
-                    className="text-muted d-block",
-                ),
-                html.Small(
-                    "Auto mode now also tries the GNPS2 Library Search `librarymatches` JSON view.",
-                    className="text-muted d-block",
-                ),
-                html.Small(
-                    "Stereochemistry is ignored by using planar InChIKey connectivity (or fallbacks).",
+                    "The evidence score (0–100) is computed per scan from four weighted signals.",
                     className="text-muted",
+                ),
+                html.H6("Score weights", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                dbc.ListGroup(
+                    [
+                        dbc.ListGroupItem([html.Strong("50% "), "Structure agreement — supporting hits / total hits (same planar structure or positional-isomer family)"]),
+                        dbc.ListGroupItem([html.Strong("15% "), "Tanimoto (ECFP4) — mean pairwise structural similarity; fallback to structure agreement when SMILES unavailable"]),
+                        dbc.ListGroupItem([html.Strong("25% "), "Spectral similarity — entropy similarity when enabled; fallback to mean cosine otherwise"]),
+                        dbc.ListGroupItem([html.Strong("10% "), "Max cosine — best MQScore observed in the scan"]),
+                    ],
+                    flush=True,
+                    className="mb-3",
+                ),
+                dbc.Alert(
+                    "Stereochemistry is ignored — planar InChIKey connectivity (or fallbacks) is used for structure grouping.",
+                    color="info",
+                    className="mb-2 py-2 small",
+                ),
+                dbc.Alert(
+                    "Auto mode tries the GNPS2 Library Search librarymatches JSON view in addition to classic and FBMN loaders.",
+                    color="secondary",
+                    className="mb-0 py-2 small",
                 ),
             ]
         ),
-    ]
+        dbc.ModalFooter(
+            dbc.Button("Close", id="close-info-modal", color="secondary", outline=True, size="sm")
+        ),
+    ],
+    id="info-modal",
+    is_open=False,
+    centered=True,
+    size="lg",
 )
 
 
@@ -142,6 +197,7 @@ BODY = dbc.Container(
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="matches-store", storage_type="memory"),
         dcc.Store(id="run-params-store", storage_type="memory"),
+        INFO_MODAL,
         dbc.Row(
             [
                 dbc.Col(html.Div(CONTROLS_CARD, id="controls-container"), md=12),
@@ -525,6 +581,16 @@ def compute_and_render_scores(matches_json, params):
             ),
         ]
     )
+
+
+@dash_app.callback(
+    Output("info-modal", "is_open"),
+    [Input("open-info-modal", "n_clicks"), Input("close-info-modal", "n_clicks")],
+    [State("info-modal", "is_open")],
+    prevent_initial_call=True,
+)
+def toggle_info_modal(_open, _close, is_open):
+    return not is_open
 
 
 if __name__ == "__main__":
