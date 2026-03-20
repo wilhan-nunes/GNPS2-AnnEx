@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TopKonfidence</title>
+    <title>GNPS2-AnnEx</title>
     <style>
         :root {
             --bg: #f4efe6;
@@ -268,14 +268,14 @@
 </head>
 <body>
     <main class="shell">
-        <span class="eyebrow">GNPS2 confidence review</span>
+        <span class="eyebrow">GNPS2 Annotation Evidence Explorer</span>
         <section class="hero">
             <div class="hero-copy">
-                <p class="eyebrow">TopKonfidence</p>
-                <h1>Score library annotations with a cleaner starting point.</h1>
+                <p class="eyebrow">GNPS2-AnnEx</p>
+                <h1>Explore the evidence behind your library annotations.</h1>
                 <p class="lead">
-                    TopKonfidence reviews GNPS2 library matches scan by scan, groups hits that agree on the same
-                    core structure, and turns that evidence into a confidence score you can inspect in detail.
+                    GNPS2-AnnEx reviews library matches scan by scan, groups hits that agree on the same
+                    core structure, and turns that evidence into a score you can inspect in detail.
                 </p>
                 <div class="process">
                     <div class="step">
@@ -284,7 +284,7 @@
                     </div>
                     <div class="step">
                         <strong>2. Score</strong>
-                        <p>We combine structure agreement, spectral similarity, and library class quality.</p>
+                        <p>We combine structure agreement, Tanimoto similarity, and spectral evidence.</p>
                     </div>
                     <div class="step">
                         <strong>3. Inspect</strong>
@@ -324,7 +324,7 @@
                     </div>
 
                     <div class="actions">
-                        <button class="button" type="submit">Load confidence dashboard</button>
+                        <button class="button" type="submit">Explore annotations</button>
                         <a class="ghost" href="/dashinterface2/">Open dashboard only</a>
                     </div>
                 </form>
@@ -340,13 +340,13 @@
             <article class="mini-card">
                 <h2>What the score means</h2>
                 <p>
-                    The scan-level confidence score runs from 0 to 100 and highlights whether a proposed annotation
-                    is reliable, less reliable, or unreliable.
+                    The scan-level evidence score runs from 0 to 100 and classifies each annotation as
+                    well-supported, ambiguous, or insufficient evidence.
                 </p>
                 <ul>
-                    <li>Structure agreement across library hits carries the most weight.</li>
-                    <li>Entropy similarity can be used when spectra are available.</li>
-                    <li>Library class quality helps distinguish stronger and weaker reference evidence.</li>
+                    <li>Structure agreement and Tanimoto structural similarity carry the most weight.</li>
+                    <li>Ambiguous annotations may reflect isomers or competing structural assignments.</li>
+                    <li>Entropy similarity can be enabled for additional spectral evidence.</li>
                 </ul>
             </article>
 

@@ -67,23 +67,23 @@ def _metric_bar_color(value):
 def _confidence_palette(confidence_label):
     confidence_label = _to_text(confidence_label)
     palette_map = {
-        "Reliable": {
+        "Well-supported": {
             "color": "#1d9a6c",
             "badge_background": "#dff4ea",
             "badge_border": "#8dd5b7",
-            "tone": "Strong supporting evidence",
+            "tone": "Strong structural evidence",
         },
-        "Less Reliable": {
+        "Ambiguous": {
             "color": "#d48a18",
             "badge_background": "#fff1d6",
             "badge_border": "#f0cb7e",
-            "tone": "Mixed supporting evidence",
+            "tone": "Structural ambiguity present",
         },
-        "Unreliable": {
+        "Insufficient evidence": {
             "color": "#d35d47",
             "badge_background": "#fde2de",
             "badge_border": "#efb0a5",
-            "tone": "Weak supporting evidence",
+            "tone": "Weak or inconclusive evidence",
         },
     }
     return palette_map.get(
@@ -114,10 +114,15 @@ def _describe_svg_arc(cx, cy, radius, start_deg, end_deg):
 def _build_reliability_gauge_data_uri(score, color):
     score_fraction = max(0.0, min(1.0, float(score) / 100.0))
     cx = 70
-    cy = 78
+    cy = 65   # raised so arc endpoints (y ≈ 102) sit within the 110-high viewBox
     radius = 52
-    start_deg = 210
-    sweep_deg = 240
+    # In SVG, sin is positive going DOWN, so:
+    #   135° = lower-left  (cos < 0, sin > 0)  → 7-8 o'clock
+    #   270° = top         (cos = 0, sin < 0)
+    #   405° = 45° = lower-right (cos > 0, sin > 0) → 4-5 o'clock
+    # Sweeping 270° clockwise takes the arc up and over the top — standard speedometer shape.
+    start_deg = 135
+    sweep_deg = 270
     end_deg = start_deg + sweep_deg * score_fraction
     background_arc = _describe_svg_arc(cx, cy, radius, start_deg, start_deg + sweep_deg)
     score_arc = _describe_svg_arc(cx, cy, radius, start_deg, end_deg)
@@ -269,7 +274,7 @@ def _build_reliability_breakdown_panel(
     metric_rows.append(
         html.Tr(
             [
-                html.Td(html.Span("Composite reliability score", className="total-label")),
+                html.Td(html.Span("Annotation evidence score", className="total-label")),
                 html.Td(),
                 html.Td(),
                 html.Td(),
@@ -304,7 +309,7 @@ def _build_reliability_breakdown_panel(
                         [
                             html.Img(src=gauge_src, className="gauge-svg", alt="Reliability score gauge"),
                             html.Div(f"{confidence_score:.1f}", className="gauge-score", style={"color": palette["color"]}),
-                            html.Div("composite reliability score", className="gauge-sublabel"),
+                            html.Div("annotation evidence score", className="gauge-sublabel"),
                             html.Div(
                                 confidence_label,
                                 className="gauge-badge",
@@ -351,19 +356,19 @@ def _build_reliability_breakdown_panel(
                     html.Span(
                         [
                             html.Span(className="legend-dot reliable-dot"),
-                            "Reliable: score >= 80",
+                            "Well-supported: score \u2265 80",
                         ]
                     ),
                     html.Span(
                         [
                             html.Span(className="legend-dot moderate-dot"),
-                            "Less Reliable: 55 to 79.9",
+                            "Ambiguous: 55 to 79.9",
                         ]
                     ),
                     html.Span(
                         [
                             html.Span(className="legend-dot low-dot"),
-                            "Unreliable: score < 55",
+                            "Insufficient evidence: score < 55",
                         ]
                     ),
                     html.Span(
