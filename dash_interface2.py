@@ -25,7 +25,7 @@ dash_app = dash.Dash(
     external_stylesheets=[dbc.themes.BOOTSTRAP],
 )
 
-dash_app.title = "GNPS2 Library Confidence"
+dash_app.title = "GNPS2-AnnEx"
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def _parse_dashboard_query(search):
 NAVBAR = dbc.Navbar(
     children=[
         dbc.NavbarBrand(
-            "TopKonfidence: GNPS2 Library Annotation Confidence",
+            "GNPS2-AnnEx: Annotation Evidence Explorer",
             href="/",
         ),
     ],
@@ -112,8 +112,8 @@ CONTROLS_CARD = dbc.Card(
                 dbc.Button("Load Library Matches", id="run-analysis", color="primary", n_clicks=0),
                 html.Hr(),
                 html.P(
-                    "Confidence is computed per scan using the fraction of supporting matches "
-                    "for the same planar structure or positional-isomer family, entropy similarity, max cosine, and Library_Class quality.",
+                    "Evidence score is computed per scan from structure agreement, Tanimoto structural similarity, "
+                    "spectral similarity, and best cosine score.",
                     className="mb-1",
                 ),
                 html.Small(
@@ -341,9 +341,9 @@ def compute_and_render_scores(matches_json, params):
         return dbc.Alert("No library matches were found for this task.", color="warning")
 
     badge_counts = {
-        "Reliable": int((summary_df["confidence_label"] == "Reliable").sum()),
-        "Less Reliable": int((summary_df["confidence_label"] == "Less Reliable").sum()),
-        "Unreliable": int((summary_df["confidence_label"] == "Unreliable").sum()),
+        "Well-supported": int((summary_df["confidence_label"] == "Well-supported").sum()),
+        "Ambiguous": int((summary_df["confidence_label"] == "Ambiguous").sum()),
+        "Insufficient evidence": int((summary_df["confidence_label"] == "Insufficient evidence").sum()),
     }
 
     table_df = summary_df.copy()
@@ -391,7 +391,7 @@ def compute_and_render_scores(matches_json, params):
             {"name": "Mean Cosine", "id": "mean_cosine"},
             {"name": "Max Cosine", "id": "max_cosine"},
             {"name": "Score", "id": "confidence_score"},
-            {"name": "Confidence", "id": "confidence_label"},
+            {"name": "Evidence Level", "id": "confidence_label"},
         ],
         page_action="native",
         page_current=0,
@@ -463,7 +463,7 @@ def compute_and_render_scores(matches_json, params):
         style_data_conditional=[
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Reliable"',
+                    "filter_query": '{confidence_label} = "Well-supported"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#d1e7dd",
@@ -471,7 +471,7 @@ def compute_and_render_scores(matches_json, params):
             },
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Less Reliable"',
+                    "filter_query": '{confidence_label} = "Ambiguous"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#fff3cd",
@@ -479,7 +479,7 @@ def compute_and_render_scores(matches_json, params):
             },
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Unreliable"',
+                    "filter_query": '{confidence_label} = "Insufficient evidence"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#f8d7da",
@@ -492,17 +492,17 @@ def compute_and_render_scores(matches_json, params):
         [
             dbc.Card(
                 [
-                    dbc.CardHeader(html.H5("Confidence Summary")),
+                    dbc.CardHeader(html.H5("Annotation Evidence Summary")),
                     dbc.CardBody(
                         [
                             html.P(f"Task: {task_id} · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}"),
-                            dbc.Badge(f"Reliable: {badge_counts['Reliable']}", color="success", className="me-2"),
+                            dbc.Badge(f"Well-supported: {badge_counts['Well-supported']}", color="success", className="me-2"),
                             dbc.Badge(
-                                f"Less Reliable: {badge_counts['Less Reliable']}",
+                                f"Ambiguous: {badge_counts['Ambiguous']}",
                                 color="warning",
                                 className="me-2",
                             ),
-                            dbc.Badge(f"Unreliable: {badge_counts['Unreliable']}", color="danger"),
+                            dbc.Badge(f"Insufficient evidence: {badge_counts['Insufficient evidence']}", color="danger"),
                         ]
                     ),
                 ],
