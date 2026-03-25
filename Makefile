@@ -14,4 +14,4 @@ server-compose-production:
 	docker-compose --compatibility -f docker-compose.yml up -d
 
 attach:
-	docker exec -i -t dash-template /bin/bash
+	docker exec -i -t gnps2-annex /bin/bash

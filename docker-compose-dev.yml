@@ -1,5 +1,5 @@
 version: '3'
 services:
-  template-multiple-dash:
+  gnps2-annex:
     ports:
     - "5000:5000"
