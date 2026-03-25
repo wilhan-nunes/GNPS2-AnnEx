@@ -528,6 +528,8 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
                 "SMILES/InChI available" if (smiles or inchi) else "SMILES/InChI unavailable",
                 className="text-muted",
             ),
+            html.Br(),
+            html.Small(smiles if smiles else inchi if inchi else "", className="text-mono"),
             html.Hr(),
             html.Div(
                 html.A("Open mirror plot", href=mirror_url, target="_blank")
