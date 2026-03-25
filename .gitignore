@@ -2,4 +2,10 @@
 logs/
 temp/
 .venv/
-/__pycache__/
+__pycache__/
+
+# Test/scratch data
+small_exert.csv
+test_task_ids.txt
+*_result.csv
+*_result.json
