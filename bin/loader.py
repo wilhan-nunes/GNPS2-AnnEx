@@ -10,8 +10,8 @@ from gnpsdata import workflow_classicnetworking
 from gnpsdata import workflow_fbmn
 
 from app import cache
-from constants import LIBRARY_RESULTS_CACHE_TIMEOUT_SEC
-from normalizer import _normalize_library_matches_dataframe
+from .constants import LIBRARY_RESULTS_CACHE_TIMEOUT_SEC
+from .normalizer import _normalize_library_matches_dataframe
 
 logger = logging.getLogger(__name__)
 

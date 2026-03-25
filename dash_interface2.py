@@ -8,14 +8,14 @@ import dash_bootstrap_components as dbc
 
 from app import app
 from components import _build_detail_panel, _build_intro_panel
-from constants import SUPPORTED_WORKFLOWS
+from bin.constants import SUPPORTED_WORKFLOWS
 import io
 
 import pandas as pd
 
-from loader import _load_library_matches
-from normalizer import _find_first_column, _infer_resolved_workflow
-from scorer import _compute_scan_level_confidence
+from bin.loader import _load_library_matches
+from bin.normalizer import _find_first_column, _infer_resolved_workflow
+from bin.scorer import _compute_scan_level_confidence
 
 
 dash_app = dash.Dash(
@@ -418,6 +418,7 @@ def compute_and_render_scores(matches_json, params):
     table_df = table_df[
         [
             "scan",
+            "precursor_mz",
             "compound_link",
             "structure_key",
             "support",
@@ -437,6 +438,7 @@ def compute_and_render_scores(matches_json, params):
         data=table_df.to_dict("records"),
         columns=[
             {"name": "Scan", "id": "scan"},
+            {"name": "Precursor m/z", "id": "precursor_mz"},
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Representative Structure Key", "id": "structure_key"},
             {"name": "Support (planar structure or isomer family / total)", "id": "support"},
@@ -514,6 +516,12 @@ def compute_and_render_scores(matches_json, params):
                 "if": {"column_id": "scan"},
                 "width": "95px",
                 "maxWidth": "95px",
+            },
+            {
+                "if": {"column_id": "precursor_mz"},
+                "width": "110px",
+                "maxWidth": "110px",
+                "textAlign": "center",
             },
         ],
         style_data_conditional=[

@@ -4,8 +4,8 @@ from functools import lru_cache
 
 import pandas as pd
 
-from constants import ENTROPY_USI_TIMEOUT_SEC
-from normalizer import (
+from .constants import ENTROPY_USI_TIMEOUT_SEC
+from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
     _canonical_structure_key,
@@ -14,7 +14,7 @@ from normalizer import (
     _normalize_library_usi,
     _to_text,
 )
-from tanimoto import scan_tanimoto
+from .tanimoto import scan_tanimoto
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def _get_entropy_similarity_from_usis(query_usi, library_usi):
         return None
 
     try:
-        from spectral_entropy_v2 import (
+        from .spectral_entropy_v2 import (
             DEFAULT_MAX_PEAK_NUM,
             DEFAULT_MS2_TOLERANCE_DA,
             DEFAULT_NOISE_THRESHOLD,
@@ -80,6 +80,7 @@ def _compute_scan_level_confidence(
     library_usi_col = _find_first_column(df, ["library_usi", "LibraryUSI", "library usi"])
     spectrum_file_col = _find_first_column(df, ["SpectrumFile"])
     smiles_col = _find_first_column(df, ["Smiles", "SMILES", "smiles"])
+    precursor_mz_col = _find_first_column(df, ["SpecMZ", "Precursor_MZ", "precursor_mz"])
 
     if scan_col is None:
         raise ValueError("Could not find scan column (#Scan# / scan / Scan) in library results.")
@@ -166,9 +167,16 @@ def _compute_scan_level_confidence(
         confidence_score = min(100.0, max(0.0, confidence_score))
         confidence_label, badge_color = _confidence_category(confidence_score)
 
+        precursor_mz = None
+        if precursor_mz_col is not None:
+            raw_mz = pd.to_numeric(scan_df[precursor_mz_col], errors="coerce").dropna()
+            if not raw_mz.empty:
+                precursor_mz = round(float(raw_mz.iloc[0]), 4)
+
         summary_rows.append(
             {
                 "scan": scan,
+                "precursor_mz": precursor_mz,
                 "top_compound": top_compound,
                 "structure_key": structure_key,
                 "support_group_key": support_group_key,
