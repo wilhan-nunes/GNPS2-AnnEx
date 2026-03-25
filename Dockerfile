@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 MAINTAINER Mingxun Wang "mwang87@gmail.com"
 
-RUN apt-get update && apt-get install -y build-essential libarchive-dev wget vim
+RUN apt-get update && apt-get install -y build-essential libarchive-dev wget vim git
 
 # Install Mamba
 ENV CONDA_DIR /opt/conda
@@ -10,6 +10,9 @@ ENV PATH=$CONDA_DIR/bin:$PATH
 
 # Adding to bashrc
 RUN echo "export PATH=$CONDA_DIR:$PATH" >> ~/.bashrc
+
+# Ensure Python 3.10
+RUN conda install -y python=3.10
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
