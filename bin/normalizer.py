@@ -11,7 +11,7 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 
 RDLogger.DisableLog("rdApp.error")
 
-from constants import SUPPORTED_WORKFLOWS
+from .constants import SUPPORTED_WORKFLOWS
 
 logger = logging.getLogger(__name__)
 

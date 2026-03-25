@@ -11,8 +11,8 @@ from dash import html
 from rdkit import Chem
 from rdkit.Chem import Draw
 
-from loader import _load_library_matches
-from normalizer import (
+from bin.loader import _load_library_matches
+from bin.normalizer import (
     _annotate_support_groups,
     _build_query_usi,
     _canonical_structure_key,
@@ -22,7 +22,7 @@ from normalizer import (
     _to_text,
     _truncate_text,
 )
-from scorer import _compute_scan_level_confidence
+from bin.scorer import _compute_scan_level_confidence
 
 logger = logging.getLogger(__name__)
 
