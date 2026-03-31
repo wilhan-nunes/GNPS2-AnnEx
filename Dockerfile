@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 MAINTAINER Mingxun Wang "mwang87@gmail.com"
 
-RUN apt-get update && apt-get install -y build-essential libarchive-dev wget vim git
+RUN apt-get update && apt-get install -y build-essential libarchive-dev wget vim git libxrender1
 
 # Install Mamba
 ENV CONDA_DIR /opt/conda
