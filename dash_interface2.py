@@ -9,7 +9,6 @@ import dash_bootstrap_components as dbc
 from app import app
 from components import (
     _build_detail_panel,
-    _build_intro_panel,
     _build_tanimoto_heatmap_figure,
     _render_mol_png_data_uri,
     _search_pubchem_candidates,
@@ -34,6 +33,9 @@ dash_app = dash.Dash(
 dash_app.title = "GNPS2-AnnEx"
 
 logger = logging.getLogger(__name__)
+
+LAPLACE_ALPHA = 4.0
+LAPLACE_BETA = 5.0
 
 
 def _get_url_param(param_dict, key, default=""):
@@ -471,16 +473,41 @@ def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, u
             "This may take several minutes for large datasets."
         )
 
-    status = dbc.Alert(
-        [
-            html.Strong(f"Loaded {n_matches:,} library matches across {n_scans:,} scan(s). "),
-            html.Span("Computing confidence scores"),
-            html.Span(" (structure agreement, Tanimoto ECFP4, cosine, library class)"),
-            html.Span(entropy_note, className="text-muted"),
-            html.Span(" — results will appear below.", className="text-muted"),
-        ],
-        color="info",
-        className="mb-0 py-2",
+    status = dbc.Card(
+        dbc.CardBody(
+            [
+                html.Div(
+                    [
+                        dbc.Badge("Loading", color="primary", className="me-2"),
+                        html.Span("Preparing scan-level confidence summary", className="fw-semibold"),
+                    ],
+                    className="d-flex align-items-center mb-2",
+                ),
+                html.Div(
+                    [
+                        dbc.Badge(f"{n_matches:,} matches", color="light", text_color="dark", className="me-2"),
+                        dbc.Badge(f"{n_scans:,} scans", color="light", text_color="dark"),
+                    ],
+                    className="mb-2",
+                ),
+                html.Div(
+                    [
+                        html.Span(
+                            "Scoring model: structure agreement, Tanimoto ECFP4, cosine.",
+                            className="text-muted",
+                        ),
+                        html.Span(entropy_note, className="text-muted"),
+                        html.Span(" Results will appear below.", className="text-muted"),
+                    ]
+                ),
+            ]
+        ),
+        className="border-0 shadow-sm mb-0",
+        style={
+            "borderRadius": "14px",
+            "background": "linear-gradient(135deg, #f7fbff 0%, #eef4ff 100%)",
+            "border": "1px solid rgba(90, 130, 190, 0.2)",
+        },
     )
 
     params = {
@@ -523,12 +550,16 @@ def compute_and_render_scores(matches_json, params):
         return dbc.Alert("No library matches were found for this task.", color="warning")
 
     badge_counts = {
-        "Well-supported": int((summary_df["confidence_label"] == "Well-supported").sum()),
-        "Ambiguous": int((summary_df["confidence_label"] == "Ambiguous").sum()),
-        "Insufficient evidence": int((summary_df["confidence_label"] == "Insufficient evidence").sum()),
+        "Consistent evidence": int((summary_df["confidence_label"] == "Consistent evidence").sum()),
+        "Inconclusive": int((summary_df["confidence_label"] == "Inconclusive").sum()),
+        "Inconsistent evidence": int((summary_df["confidence_label"] == "Inconsistent evidence").sum()),
     }
 
     table_df = summary_df.copy()
+    table_df["adjusted_support_score"] = (
+        (table_df["supporting_matches"].astype(float) + LAPLACE_ALPHA)
+        / (table_df["total_matches"].astype(float) + LAPLACE_BETA)
+    ).round(3)
     table_df["support"] = (
         table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
     )
@@ -548,6 +579,7 @@ def compute_and_render_scores(matches_json, params):
             "compound_link",
             "structure_key",
             "support",
+            "adjusted_support_score",
             "missing_structures",
             "tanimoto_score",
             "tanimoto_source",
@@ -569,6 +601,7 @@ def compute_and_render_scores(matches_json, params):
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Representative Structure Key", "id": "structure_key"},
             {"name": "Support (planar structure or isomer family / total)", "id": "support"},
+            {"name": "Adjusted Support (Laplace \u03b1=2, \u03b2=3)", "id": "adjusted_support_score"},
             {"name": "Missing structures (no SMILES/InChIKey)", "id": "missing_structures"},
             {"name": "Tanimoto (ECFP4)", "id": "tanimoto_score"},
             {"name": "Tanimoto Source", "id": "tanimoto_source"},
@@ -623,6 +656,13 @@ def compute_and_render_scores(matches_json, params):
                 "textAlign": "center",
             },
             {
+                "if": {"column_id": "adjusted_support_score"},
+                "width": "145px",
+                "maxWidth": "145px",
+                "textAlign": "center",
+                "fontWeight": "600",
+            },
+            {
                 "if": {"column_id": "missing_structures"},
                 "width": "120px",
                 "maxWidth": "120px",
@@ -661,7 +701,7 @@ def compute_and_render_scores(matches_json, params):
         style_data_conditional=[
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Well-supported"',
+                    "filter_query": '{confidence_label} = "Consistent evidence"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#d1e7dd",
@@ -669,7 +709,7 @@ def compute_and_render_scores(matches_json, params):
             },
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Ambiguous"',
+                    "filter_query": '{confidence_label} = "Inconclusive"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#fff3cd",
@@ -677,11 +717,59 @@ def compute_and_render_scores(matches_json, params):
             },
             {
                 "if": {
-                    "filter_query": '{confidence_label} = "Insufficient evidence"',
+                    "filter_query": '{confidence_label} = "Inconsistent evidence"',
                     "column_id": "confidence_label",
                 },
                 "backgroundColor": "#f8d7da",
                 "color": "#842029",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} >= 0.9",
+                },
+                "backgroundColor": "#0c2c84",
+                "color": "#f7fbff",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} >= 0.8 && {adjusted_support_score} < 0.9",
+                },
+                "backgroundColor": "#225ea8",
+                "color": "#f7fbff",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} >= 0.7 && {adjusted_support_score} < 0.8",
+                },
+                "backgroundColor": "#1d91c0",
+                "color": "#f7fbff",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} >= 0.6 && {adjusted_support_score} < 0.7",
+                },
+                "backgroundColor": "#41b6c4",
+                "color": "#08306b",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} >= 0.5 && {adjusted_support_score} < 0.6",
+                },
+                "backgroundColor": "#7fcdbb",
+                "color": "#08306b",
+            },
+            {
+                "if": {
+                    "column_id": "adjusted_support_score",
+                    "filter_query": "{adjusted_support_score} < 0.5",
+                },
+                "backgroundColor": "#ccece6",
+                "color": "#0b3d4f",
             },
         ],
     )
@@ -693,14 +781,31 @@ def compute_and_render_scores(matches_json, params):
                     dbc.CardHeader(html.H5("Annotation Evidence Summary")),
                     dbc.CardBody(
                         [
-                            html.P(f"Task: {task_id} · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}"),
-                            dbc.Badge(f"Well-supported: {badge_counts['Well-supported']}", color="success", className="me-2"),
+                            html.P(
+                                [
+                                    "Task: ",
+                                    html.A(
+                                        task_id,
+                                        href=f"https://gnps2.org/status?task={task_id}",
+                                        target="_blank",
+                                    ),
+                                    f" · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}",
+                                ]
+                            ),
                             dbc.Badge(
-                                f"Ambiguous: {badge_counts['Ambiguous']}",
+                                f"Consistent evidence: {badge_counts['Consistent evidence']}",
+                                color="success",
+                                className="me-2",
+                            ),
+                            dbc.Badge(
+                                f"Inconclusive: {badge_counts['Inconclusive']}",
                                 color="warning",
                                 className="me-2",
                             ),
-                            dbc.Badge(f"Insufficient evidence: {badge_counts['Insufficient evidence']}", color="danger"),
+                            dbc.Badge(
+                                f"Inconsistent evidence: {badge_counts['Inconsistent evidence']}",
+                                color="danger",
+                            ),
                         ]
                     ),
                 ],

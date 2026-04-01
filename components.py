@@ -271,23 +271,23 @@ def _metric_bar_color(value):
 def _confidence_palette(confidence_label):
     confidence_label = _to_text(confidence_label)
     palette_map = {
-        "Well-supported": {
+        "Consistent evidence": {
             "color": "#1d9a6c",
             "badge_background": "#dff4ea",
             "badge_border": "#8dd5b7",
             "tone": "Strong structural evidence",
         },
-        "Ambiguous": {
+        "Inconclusive": {
             "color": "#d48a18",
             "badge_background": "#fff1d6",
             "badge_border": "#f0cb7e",
-            "tone": "Structural ambiguity present",
+            "tone": "Inconclusive evidence",
         },
-        "Insufficient evidence": {
+        "Inconsistent evidence": {
             "color": "#d35d47",
             "badge_background": "#fde2de",
             "badge_border": "#efb0a5",
-            "tone": "Weak or inconclusive evidence",
+            "tone": "Inconsistent evidence across matches",
         },
     }
     return palette_map.get(
@@ -564,19 +564,19 @@ def _build_reliability_breakdown_panel(
                     html.Span(
                         [
                             html.Span(className="legend-dot reliable-dot"),
-                            "Well-supported: score \u2265 80",
+                            "Consistent evidence: score \u2265 80",
                         ]
                     ),
                     html.Span(
                         [
                             html.Span(className="legend-dot moderate-dot"),
-                            "Ambiguous: 55 to 79.9",
+                            "Inconclusive: 55 to 79.9",
                         ]
                     ),
                     html.Span(
                         [
                             html.Span(className="legend-dot low-dot"),
-                            "Insufficient evidence: score < 55",
+                            "Inconsistent evidence: score < 55",
                         ]
                     ),
                     html.Span(
@@ -912,31 +912,3 @@ def _build_detail_panel(
     )
 
     return html.Div([metric_card, compounds_card]), compounds_data
-
-
-def _build_intro_panel():
-    return dbc.Card(
-        [
-            dbc.CardHeader(html.H5("Start With a GNPS2 Task")),
-            dbc.CardBody(
-                [
-                    html.P(
-                        "Enter a completed GNPS2 task ID above to load library matches and score each scan.",
-                        className="mb-2",
-                    ),
-                    html.Ul(
-                        [
-                            html.Li("Supported workflows: FBMN, Classical Networking, and Library Search."),
-                            html.Li("Each scan is scored from structure agreement, Tanimoto structural similarity, spectral similarity, and best cosine score."),
-                            html.Li("Open a proposed compound to inspect the detailed evidence and mirror-plot links."),
-                        ],
-                        className="mb-2",
-                    ),
-                    html.Small(
-                        "If you start from the landing page, results open automatically after you submit a task ID.",
-                        className="text-muted",
-                    ),
-                ]
-            ),
-        ]
-    )
