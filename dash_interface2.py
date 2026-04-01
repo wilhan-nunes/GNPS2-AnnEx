@@ -7,7 +7,13 @@ from dash import ALL, MATCH, Input, Output, State, ctx, dash_table, dcc, html, n
 import dash_bootstrap_components as dbc
 
 from app import app
-from components import _build_detail_panel, _build_intro_panel, _build_tanimoto_heatmap_figure, _search_pubchem_candidates
+from components import (
+    _build_detail_panel,
+    _build_intro_panel,
+    _build_tanimoto_heatmap_figure,
+    _render_mol_png_data_uri,
+    _search_pubchem_candidates,
+)
 from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
 from bin.constants import SUPPORTED_WORKFLOWS
 import io
@@ -843,6 +849,63 @@ def apply_pubchem_override(dropdown_values, dropdown_ids, current_overrides):
     else:
         overrides.pop(triggered_key, None)
     return overrides
+
+
+@dash_app.callback(
+    Output({"type": "pubchem-structure-preview", "index": ALL}, "children"),
+    Input("pubchem-overrides-store", "data"),
+    [
+        State({"type": "pubchem-structure-preview", "index": ALL}, "id"),
+        State({"type": "compound-info-store", "index": ALL}, "data"),
+    ],
+    prevent_initial_call=True,
+)
+def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
+    """Update structure previews on missing-structure cards after PubChem selection."""
+    preview_ids = preview_ids or []
+    compound_infos = compound_infos or []
+
+    if not preview_ids:
+        return []
+
+    overrides = overrides or {}
+    updated_children = []
+
+    for preview_id, compound_info in zip(preview_ids, compound_infos):
+        card_idx = str((preview_id or {}).get("index", ""))
+        info = compound_info or {}
+        base_smiles = (info.get("smiles") or "").strip()
+        inchi = (info.get("inchi") or "").strip()
+        selected_smiles = (overrides.get(card_idx) or "").strip()
+        smiles_for_render = selected_smiles or base_smiles
+
+        image_url = _render_mol_png_data_uri(smiles=smiles_for_render, inchi=inchi)
+        if image_url:
+            updated_children.append(
+                html.Div(
+                    [
+                        html.Img(
+                            src=image_url,
+                            style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                        ),
+                        html.Small(
+                            "Structure from selected PubChem match"
+                            if selected_smiles
+                            else "Structure from library/InChI",
+                            className="text-muted d-block",
+                        ),
+                    ]
+                )
+            )
+        else:
+            updated_children.append(
+                html.Small(
+                    "No structure image yet. Select a PubChem match to display one.",
+                    className="text-muted d-block",
+                )
+            )
+
+    return updated_children
 
 
 @dash_app.callback(
