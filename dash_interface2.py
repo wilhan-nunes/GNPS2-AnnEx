@@ -3,18 +3,18 @@ import logging
 import urllib.parse
 
 import dash
-from dash import Input, Output, State, dash_table, dcc, html, no_update
+from dash import ALL, MATCH, Input, Output, State, ctx, dash_table, dcc, html, no_update
 import dash_bootstrap_components as dbc
 
 from app import app
-from components import _build_detail_panel, _build_intro_panel
+from components import _build_detail_panel, _build_intro_panel, _build_tanimoto_heatmap_figure, _search_pubchem_candidates
+from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
 from bin.constants import SUPPORTED_WORKFLOWS
 import io
 
 import pandas as pd
 
 from bin.loader import _load_library_matches
-from bin.normalizer import _find_first_column, _infer_resolved_workflow
 from bin.scorer import _compute_scan_level_confidence
 
 
@@ -197,6 +197,8 @@ BODY = dbc.Container(
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="matches-store", storage_type="memory"),
         dcc.Store(id="run-params-store", storage_type="memory"),
+        dcc.Store(id="scan-data-store", storage_type="memory"),
+        dcc.Store(id="pubchem-overrides-store", storage_type="memory"),
         INFO_MODAL,
         dbc.Row(
             [
@@ -206,9 +208,67 @@ BODY = dbc.Container(
         ),
         dbc.Row(
             [
-                dbc.Col(html.Div(id="detail-panel"), md=12),
+                dbc.Col(
+                    html.Div(
+                        [
+                            html.Div(id="detail-score-panel"),
+                            html.Div(id="detail-compounds-panel"),
+                        ],
+                        id="detail-panel",
+                    ),
+                    md=12,
+                ),
             ],
             style={"marginTop": 12},
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.Div(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    dbc.Checklist(
+                                        id="pubchem-enabled",
+                                        options=[
+                                            {
+                                                "label": "Use selected PubChem SMILES in heatmap and score",
+                                                "value": "enabled",
+                                            }
+                                        ],
+                                        value=[],
+                                        switch=True,
+                                    ),
+                                    html.Small(
+                                        "Enable to apply manually selected PubChem SMILES to the Tanimoto heatmap "
+                                        "and the detail confidence score.",
+                                        className="text-muted",
+                                    ),
+                                ]
+                            ),
+                            className="border-0 shadow-sm",
+                            style={"borderRadius": "14px", "background": "rgba(255,255,255,0.9)"},
+                        ),
+                        id="pubchem-controls",
+                        style={"display": "none"},
+                    ),
+                    md=12,
+                ),
+            ],
+            style={"marginTop": 8},
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    dcc.Loading(
+                        id="loading-heatmap",
+                        type="dot",
+                        children=html.Div(id="heatmap-panel"),
+                    ),
+                    md=12,
+                ),
+            ],
+            style={"marginTop": 4},
         ),
         dbc.Row(
             [
@@ -268,14 +328,18 @@ def toggle_controls_for_detail_view(search):
 
 
 @dash_app.callback(
-    Output("detail-panel", "children"),
+    [
+        Output("detail-score-panel", "children"),
+        Output("detail-compounds-panel", "children"),
+        Output("scan-data-store", "data"),
+    ],
     [Input("url", "search")],
 )
 def render_detail_panel(search):
     query_state = _parse_dashboard_query(search)
 
     if not query_state["detail_mode"]:
-        return html.Div()
+        return html.Div(), html.Div(), None
 
     task_id = query_state["task_id"]
     scan = query_state["scan"]
@@ -283,17 +347,73 @@ def render_detail_panel(search):
     use_entropy_similarity = query_state["use_entropy_similarity"]
 
     if not task_id or not scan:
-        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning")
+        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), None
 
     try:
-        return _build_detail_panel(
+        panel_ui, compounds_data = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
             use_entropy_similarity=use_entropy_similarity,
         )
+        score_panel = panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
+        compounds_panel = panel_ui.children[1] if getattr(panel_ui, "children", None) else html.Div()
+        return score_panel, compounds_panel, {
+            "compounds": compounds_data,
+            "task_id": task_id,
+            "scan": scan,
+            "workflow_choice": workflow_choice,
+            "use_entropy_similarity": use_entropy_similarity,
+        }
+    except Exception as exc:
+        return dbc.Alert(str(exc), color="danger"), html.Div(), None
+
+
+@dash_app.callback(
+    Output("detail-score-panel", "children", allow_duplicate=True),
+    [
+        Input("scan-data-store", "data"),
+        Input("pubchem-overrides-store", "data"),
+        Input("pubchem-enabled", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
+    """Update only the score panel so PubChem selection does not remount compound cards."""
+    if not scan_data:
+        return html.Div()
+
+    task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
+    scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
+    workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
+    use_entropy_similarity = bool(scan_data.get("use_entropy_similarity", False))
+    use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
+
+    if not task_id or not scan:
+        return html.Div()
+
+    try:
+        panel_ui, _ = _build_detail_panel(
+            task_id,
+            scan,
+            workflow_choice,
+            use_entropy_similarity=use_entropy_similarity,
+            pubchem_overrides=pubchem_overrides,
+            use_pubchem_for_score=use_pubchem_for_score,
+        )
+        return panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
+
+
+@dash_app.callback(
+    Output("pubchem-overrides-store", "data"),
+    Input("url", "search"),
+)
+def reset_pubchem_overrides_on_page_change(search):
+    if _parse_dashboard_query(search)["detail_mode"]:
+        return {}
+    return None
 
 
 @dash_app.callback(
@@ -588,6 +708,219 @@ def compute_and_render_scores(matches_json, params):
                 ]
             ),
         ]
+    )
+
+
+@dash_app.callback(
+    Output({"type": "pubchem-candidates-div", "index": MATCH}, "children"),
+    Input({"type": "pubchem-search-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "pubchem-name-input", "index": MATCH}, "value"),
+    State({"type": "compound-info-store", "index": MATCH}, "data"),
+    prevent_initial_call=True,
+)
+def search_pubchem_for_card(n_clicks, manual_name_query, compound_info):
+    """Fetch PubChem candidates for one compound card and render a dropdown picker."""
+    if not n_clicks or not compound_info:
+        return no_update
+
+    triggered_index = ctx.triggered_id["index"]
+    smiles = (compound_info.get("smiles") or "").strip()
+    typed_query = (manual_name_query or "").strip()
+
+    if smiles:
+        return dbc.Alert(
+            "PubChem lookup is only available when SMILES is missing.",
+            color="info",
+            className="py-2 small mb-0",
+        )
+
+    if not typed_query:
+        return dbc.Alert(
+            "Type a compound name before searching PubChem.",
+            color="info",
+            className="py-2 small mb-0",
+        )
+
+    candidates = _search_pubchem_candidates("", typed_query)
+
+    if not candidates:
+        return dbc.Alert(
+            f'No PubChem match found for "{_truncate_text(typed_query, max_length=40)}".',
+            color="warning",
+            className="py-2 small mb-0",
+        )
+
+    dropdown_options = []
+    for c in candidates:
+        candidate_smiles = c.get("smiles") or ""
+        if not candidate_smiles:
+            continue
+
+        matched_name = _truncate_text(c.get("matched_name", ""), max_length=30)
+        source_label = c.get("source", "name")
+        query_note = f" | query: {matched_name}" if source_label == "name-fuzzy" and matched_name else ""
+        dropdown_options.append(
+            {
+                "label": (
+                    f"CID {c.get('cid', '?')} ({source_label}) - "
+                    f"{_truncate_text(c.get('iupac_name', ''), max_length=45)}{query_note}"
+                ),
+                "value": candidate_smiles,
+            }
+        )
+
+    if not dropdown_options:
+        return dbc.Alert(
+            "PubChem returned results but none had a SMILES string.",
+            color="warning",
+            className="py-2 small mb-0",
+        )
+
+    return html.Div(
+        [
+            html.Small(
+                f"{len(dropdown_options)} candidate(s) found - select one to apply it:",
+                className="text-muted d-block mb-2",
+            ),
+            dcc.Dropdown(
+                id={"type": "pubchem-dropdown", "index": triggered_index},
+                options=dropdown_options,
+                value=None,
+                placeholder="Select the best PubChem match",
+                clearable=True,
+            ),
+        ]
+    )
+
+
+@dash_app.callback(
+    Output("pubchem-overrides-store", "data", allow_duplicate=True),
+    Input({"type": "pubchem-dropdown", "index": ALL}, "value"),
+    [
+        State({"type": "pubchem-dropdown", "index": ALL}, "id"),
+        State("pubchem-overrides-store", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def apply_pubchem_override(dropdown_values, dropdown_ids, current_overrides):
+    """Write the user-selected PubChem SMILES into the overrides store."""
+    if not isinstance(ctx.triggered_id, dict):
+        return no_update
+
+    triggered_index = ctx.triggered_id["index"]
+
+    selected_smiles = None
+    found_triggered = False
+    for rid, rval in zip(dropdown_ids or [], dropdown_values or []):
+        if isinstance(rid, dict) and rid.get("index") == triggered_index:
+            found_triggered = True
+            selected_smiles = (rval or "").strip() if isinstance(rval, str) else ""
+            break
+
+    if not found_triggered:
+        return no_update
+
+    overrides = dict(current_overrides or {})
+    triggered_key = str(triggered_index)
+
+    # Ignore initial empty dropdown value when candidates are first rendered.
+    if not selected_smiles and triggered_key not in overrides:
+        return no_update
+
+    if selected_smiles and overrides.get(triggered_key) == selected_smiles:
+        return no_update
+
+    if selected_smiles:
+        overrides[triggered_key] = selected_smiles
+    else:
+        overrides.pop(triggered_key, None)
+    return overrides
+
+
+@dash_app.callback(
+    Output("pubchem-controls", "style"),
+    [Input("url", "search")],
+)
+def toggle_pubchem_controls(search):
+    if _parse_dashboard_query(search)["detail_mode"]:
+        return {"display": "block"}
+    return {"display": "none"}
+
+
+@dash_app.callback(
+    Output("heatmap-panel", "children"),
+    [
+        Input("scan-data-store", "data"),
+        Input("pubchem-overrides-store", "data"),
+        Input("pubchem-enabled", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
+    """Render the pairwise Tanimoto heatmap, applying any user-selected PubChem overrides."""
+    if not scan_data:
+        return html.Div()
+
+    use_selected_pubchem = isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    overrides = overrides or {}
+
+    # Apply per-card overrides only when the toggle is enabled.
+    compounds_data = []
+    applied_overrides = 0
+    for c in scan_data.get("compounds", []):
+        c_copy = dict(c)
+        override_smiles = ""
+        if use_selected_pubchem:
+            override_smiles = (overrides.get(str(c.get("card_idx", ""))) or "").strip()
+        if override_smiles:
+            c_copy["smiles"] = override_smiles
+            applied_overrides += 1
+        compounds_data.append(c_copy)
+
+    if len(compounds_data) < 2:
+        return dbc.Alert(
+            "At least 2 unique compounds are needed to display a Tanimoto heatmap.",
+            color="info",
+            className="mb-0 py-2",
+        )
+
+    fig = _build_tanimoto_heatmap_figure(compounds_data, use_pubchem=False)
+
+    if fig is None:
+        return dbc.Alert("RDKit/Plotly unavailable — cannot build Tanimoto heatmap.", color="warning")
+
+    n_missing = sum(1 for c in compounds_data if not c.get("smiles"))
+
+    if applied_overrides:
+        source_note = f"{applied_overrides} structure(s) updated via selected PubChem SMILES."
+    elif overrides and not use_selected_pubchem:
+        source_note = "PubChem selections are available but currently disabled by the toggle."
+    elif n_missing:
+        source_note = (
+            f"{n_missing} compound(s) have no SMILES — cells are blank. "
+            "Type a name and use 'Search PubChem' on the cards above, then enable the toggle below."
+        )
+    else:
+        source_note = "All SMILES sourced from library."
+
+    return dbc.Card(
+        [
+            dbc.CardHeader(html.H5("Pairwise Tanimoto Similarity Heatmap")),
+            dbc.CardBody(
+                [
+                    html.Small(
+                        [
+                            f"ECFP4 pairwise Tanimoto across {len(compounds_data)} unique compound(s). "
+                            "Green = structurally similar, red = dissimilar. Upper triangle omitted. ",
+                            html.Span(source_note, className="text-muted"),
+                        ]
+                    ),
+                    html.Hr(),
+                    dcc.Graph(figure=fig, config={"displayModeBar": False}),
+                ]
+            ),
+        ],
+        className="mb-3",
     )
 
 

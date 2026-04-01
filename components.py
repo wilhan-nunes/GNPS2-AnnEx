@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 import base64
+import json
 import logging
 import math
 import urllib.parse
+import urllib.request
+from difflib import SequenceMatcher
 from io import BytesIO
 
 import dash_bootstrap_components as dbc
 import pandas as pd
-from dash import html
+from dash import dcc, html
 from rdkit import Chem
 from rdkit.Chem import Draw
 
@@ -22,9 +25,208 @@ from bin.normalizer import (
     _to_text,
     _truncate_text,
 )
-from bin.scorer import _compute_scan_level_confidence
+from bin.scorer import _compute_scan_level_confidence, _confidence_category
+from bin.tanimoto import _smiles_to_morgan_fp, scan_tanimoto
 
 logger = logging.getLogger(__name__)
+
+
+def _search_pubchem_candidates(inchikey: str, name: str, max_results: int = 8) -> list:
+    """
+    Search PubChem for compound candidates.
+
+    Tries InChIKey first (exact match). If that fails, performs a fuzzy
+    name lookup by combining PubChem autocomplete suggestions with
+    name-based property queries.
+    Returns list of {"cid": int|str, "iupac_name": str, "smiles": str, "source": str, "matched_name": str}.
+    """
+
+    invalid_names = {"", "unknown", "unknown compound", "n/a", "none", "nan"}
+
+    def _fetch_json(url: str) -> dict:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "TopKonfidence/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            logger.debug("PubChem fetch failed for URL %s", url)
+            return {}
+
+    def _fetch_properties(url_suffix: str, source_label: str, matched_name: str = "") -> list:
+        url = (
+            "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/"
+            + url_suffix
+            + "/property/IsomericSMILES,SMILES,IUPACName/JSON"
+        )
+        data = _fetch_json(url)
+        return [
+            {
+                "cid": prop.get("CID", "?"),
+                "iupac_name": prop.get("IUPACName") or f"CID {prop.get('CID', '?')}",
+                "smiles": prop.get("IsomericSMILES") or prop.get("SMILES") or "",
+                "source": source_label,
+                "matched_name": matched_name,
+            }
+            for prop in data.get("PropertyTable", {}).get("Properties", [])
+        ]
+
+    def _fetch_autocomplete_names(query: str, limit: int = 8) -> list:
+        url = (
+            "https://pubchem.ncbi.nlm.nih.gov/rest/autocomplete/compound/"
+            + urllib.parse.quote(query)
+            + f"/JSON?limit={int(limit)}"
+        )
+        data = _fetch_json(url)
+        terms = data.get("dictionary_terms", {}).get("compound", [])
+        if not isinstance(terms, list):
+            return []
+
+        cleaned = [str(term).strip() for term in terms if str(term).strip()]
+        cleaned.sort(
+            key=lambda term: SequenceMatcher(None, query.lower(), term.lower()).ratio(),
+            reverse=True,
+        )
+        return cleaned[:limit]
+
+    def _dedupe_candidates(candidates: list) -> list:
+        seen_keys: set = set()
+        deduped = []
+        for candidate in candidates:
+            cid = str(candidate.get("cid", "")).strip()
+            key = cid if cid else (candidate.get("smiles", ""), candidate.get("iupac_name", ""))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(candidate)
+            if len(deduped) >= max_results:
+                break
+        return deduped
+
+    results: list = []
+
+    inchikey = (inchikey or "").strip()
+    if inchikey and inchikey.lower() not in {"none", "nan"}:
+        results = _fetch_properties("inchikey/" + urllib.parse.quote(inchikey), "InChIKey")
+
+    if not results:
+        name = (name or "").strip()
+        if name and name.lower() not in invalid_names:
+            query_names = [name]
+            for candidate_name in _fetch_autocomplete_names(name, limit=max_results):
+                if candidate_name.lower() != name.lower():
+                    query_names.append(candidate_name)
+
+            for candidate_name in query_names:
+                source = "name" if candidate_name == name else "name-fuzzy"
+                results.extend(
+                    _fetch_properties(
+                        "name/" + urllib.parse.quote(candidate_name),
+                        source,
+                        matched_name=candidate_name,
+                    )
+                )
+                if len(_dedupe_candidates(results)) >= max_results:
+                    break
+
+    return _dedupe_candidates(results)
+
+
+def _fetch_pubchem_smiles(compound_name: str) -> str:
+    """Fetch the first available SMILES from PubChem by compound name. Returns '' on failure."""
+    candidates = _search_pubchem_candidates("", compound_name, max_results=1)
+    return candidates[0]["smiles"] if candidates else ""
+
+
+def _build_tanimoto_heatmap_figure(compounds_data: list, use_pubchem: bool = False):
+    """
+    Build a Plotly lower-triangle heatmap of pairwise Tanimoto (ECFP4) similarity.
+
+    Parameters
+    ----------
+    compounds_data : list of {"name": str, "smiles": str}
+    use_pubchem    : if True, fetch SMILES from PubChem for compounds that lack one.
+
+    Returns a plotly go.Figure, or None if RDKit/Plotly is unavailable.
+    """
+    try:
+        import plotly.graph_objects as go
+        from rdkit.Chem import DataStructs
+    except ImportError:
+        return None
+
+    compounds = [dict(c) for c in compounds_data]  # shallow copy
+
+    for c in compounds:
+        smiles = c.get("smiles") or ""
+        if not smiles and use_pubchem:
+            fetched = _fetch_pubchem_smiles(c["name"])
+            c["smiles"] = fetched
+            c["smiles_source"] = "pubchem" if fetched else "unavailable"
+        elif smiles:
+            c["smiles_source"] = "library"
+        else:
+            c["smiles_source"] = "unavailable"
+
+    fps = [_smiles_to_morgan_fp(c["smiles"]) if c.get("smiles") else None for c in compounds]
+
+    n = len(compounds)
+    labels = [_truncate_text(c["name"], max_length=28) for c in compounds]
+    sources = [c.get("smiles_source", "unavailable") for c in compounds]
+
+    # Build lower-triangle matrix (i >= j); upper triangle stays None → blank
+    z = [[None] * n for _ in range(n)]
+    hover_text = [[""] * n for _ in range(n)]
+
+    for i in range(n):
+        for j in range(i + 1):
+            li, lj = labels[i], labels[j]
+            if i == j:
+                z[i][j] = 1.0
+                hover_text[i][j] = f"<b>{li}</b><br>Self: 1.0000"
+            elif fps[i] is not None and fps[j] is not None:
+                sim = DataStructs.TanimotoSimilarity(fps[i], fps[j])
+                z[i][j] = round(sim, 4)
+                hover_text[i][j] = (
+                    f"<b>{li}</b> vs <b>{lj}</b><br>"
+                    f"Tanimoto: {sim:.4f}<br>"
+                    f"SMILES sources: {sources[i]} / {sources[j]}"
+                )
+            else:
+                z[i][j] = None
+                missing = [lbl for lbl, fp in ((li, fps[i]), (lj, fps[j])) if fp is None]
+                hover_text[i][j] = (
+                    f"<b>{li}</b> vs <b>{lj}</b><br>"
+                    f"N/A — no SMILES for: {', '.join(missing)}"
+                )
+
+    colorscale = [[0.0, "#d35d47"], [0.5, "#d48a18"], [1.0, "#1d9a6c"]]
+    cell_px = 38
+    height = max(320, n * cell_px + 150)
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=labels,
+            y=labels,
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+            colorscale=colorscale,
+            zmin=0.0,
+            zmax=1.0,
+            colorbar=dict(title="Tanimoto", thickness=14, len=0.7),
+            showscale=True,
+        )
+    )
+    fig.update_layout(
+        title=dict(text="Pairwise Tanimoto Similarity (ECFP4)", font=dict(size=13)),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=11), side="bottom"),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
+        height=height,
+        margin=dict(l=20, r=20, t=55, b=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
 
 
 def _format_workflow_label(workflow_choice):
@@ -49,7 +251,9 @@ def _format_entropy_source_label(entropy_source):
 def _format_tanimoto_source_label(tanimoto_source):
     source_label_map = {
         "tanimoto_ecfp4": "Tanimoto (ECFP4, mean pairwise)",
+        "tanimoto_ecfp4_pubchem": "Tanimoto (ECFP4, mean pairwise; SMILES via PubChem)",
         "single_structure": "Tanimoto (single structure — perfect consensus)",
+        "single_structure_pubchem": "Tanimoto (single structure — perfect consensus; SMILES via PubChem)",
         "structure_agreement_fallback": "Structure agreement fallback (too few SMILES for Tanimoto)",
         "unavailable": "Unavailable (RDKit error)",
     }
@@ -174,10 +378,14 @@ def _build_reliability_breakdown_panel(
     tanimoto_secondary = (
         "Mean pairwise Tanimoto (ECFP4, r=2, 2048-bit) across unique SMILES in this scan"
         if tanimoto_source == "tanimoto_ecfp4"
-        else "Fell back to hit-count structure agreement (fewer than 2 unique valid SMILES)"
-        if tanimoto_source == "structure_agreement_fallback"
+        else "Mean pairwise Tanimoto (ECFP4, r=2, 2048-bit); missing SMILES resolved via PubChem"
+        if tanimoto_source == "tanimoto_ecfp4_pubchem"
         else "All hits agree on one structure — no pairs to compare"
         if tanimoto_source == "single_structure"
+        else "Single structure (SMILES resolved via PubChem) — perfect consensus"
+        if tanimoto_source == "single_structure_pubchem"
+        else "Fell back to hit-count structure agreement (fewer than 2 unique valid SMILES)"
+        if tanimoto_source == "structure_agreement_fallback"
         else "RDKit fingerprint computation unavailable"
     )
 
@@ -429,7 +637,14 @@ def _build_mirror_plot_link(query_usi, library_usi):
     return f"https://metabolomics-usi.gnps2.org/dashinterface/?{params}"
 
 
-def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=True):
+def _build_detail_panel(
+    task_id,
+    scan,
+    workflow_choice,
+    use_entropy_similarity=True,
+    pubchem_overrides=None,
+    use_pubchem_for_score=False,
+):
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
     summary_df = _compute_scan_level_confidence(
@@ -474,6 +689,15 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
+    scan_df["_smiles"] = scan_df["_smiles"].apply(
+        lambda v: "" if _to_text(v).strip().lower() in {"none", "nan"} else _to_text(v).strip()
+    )
+    scan_df["_inchikey"] = scan_df["_inchikey"].apply(
+        lambda v: "" if _to_text(v).strip().lower() in {"none", "nan"} else _to_text(v).strip()
+    )
+    scan_df["_inchi"] = scan_df["_inchi"].apply(
+        lambda v: "" if _to_text(v).strip().lower() in {"none", "nan"} else _to_text(v).strip()
+    )
     scan_df["_structure_key"] = scan_df.apply(_canonical_structure_key, axis=1)
     scan_df = _annotate_support_groups(scan_df)
 
@@ -483,17 +707,13 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
         .head(25)
     )
 
-    metric_card = _build_reliability_breakdown_panel(
-        task_id,
-        scan,
-        workflow_choice,
-        resolved_workflow,
-        score_row,
-        use_entropy_similarity,
-    )
-
     cards = []
-    for _, row in detail_rows.iterrows():
+    seen_keys: set = set()
+    compounds_data: list = []
+    card_signatures: list = []
+    overrides = dict(pubchem_overrides or {}) if isinstance(pubchem_overrides, dict) else {}
+
+    for card_idx, (_, row) in enumerate(detail_rows.iterrows()):
         compound = _to_text(row.get("_compound")) or "Unknown Compound"
         lib_usi = _to_text(row.get("_library_usi"))
         lib_name = _to_text(row.get("_library_name"))
@@ -509,6 +729,42 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
         if normalized_library_usi:
             mirror_url = _build_mirror_plot_link(query_usi, normalized_library_usi)
 
+        can_search_pubchem = not smiles
+
+        if can_search_pubchem:
+            pubchem_section = html.Div(
+                [
+                    # Hidden store carries compound identity to the search callback
+                    dcc.Store(
+                        id={"type": "compound-info-store", "index": card_idx},
+                        data={"name": compound, "inchikey": inchikey, "smiles": smiles},
+                    ),
+                    html.Hr(className="my-2"),
+                    html.Small("PubChem structure lookup", className="text-muted fw-semibold d-block mb-1"),
+                    dbc.Input(
+                        id={"type": "pubchem-name-input", "index": card_idx},
+                        type="text",
+                        placeholder="Type a compound name to fuzzy-search PubChem",
+                        className="mb-2",
+                    ),
+                    html.Small(
+                        f"Library suggestion: {compound}",
+                        className="text-muted d-block mb-2",
+                    ),
+                    dbc.Button(
+                        "Search PubChem for structure",
+                        id={"type": "pubchem-search-btn", "index": card_idx},
+                        size="sm",
+                        color="secondary",
+                        outline=True,
+                        n_clicks=0,
+                    ),
+                    html.Div(id={"type": "pubchem-candidates-div", "index": card_idx}, className="mt-2"),
+                ]
+            )
+        else:
+            pubchem_section = html.Div()
+
         card_body = [
             html.H6(compound),
             html.Div(f"Cosine: {round(float(cosine), 4)}"),
@@ -522,7 +778,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
                 className="text-muted",
             ),
             html.Br(),
-            html.Small(f"InChIKey: {inchikey}" if (inchikey != "None" and inchikey)  else "InChIKey unavailable", className="text-muted"),
+            html.Small(f"InChIKey: {inchikey}" if inchikey else "InChIKey unavailable", className="text-muted"),
             html.Br(),
             html.Small(
                 "SMILES/InChI available" if (smiles or inchi) else "SMILES/InChI unavailable",
@@ -536,6 +792,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
                 if mirror_url
                 else "Mirror plot link unavailable for this hit"
             ),
+            pubchem_section,
         ]
 
         if image_url:
@@ -556,6 +813,81 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
             )
         )
 
+        card_signatures.append(
+            {
+                "card_idx": card_idx,
+                "compound": compound,
+                "library_usi": lib_usi,
+                "smiles": smiles,
+                "inchikey": inchikey,
+            }
+        )
+
+        # Accumulate unique compounds for the heatmap (deduplicated by SMILES, else by name)
+        key = smiles if smiles else compound
+        if key not in seen_keys:
+            seen_keys.add(key)
+            compounds_data.append(
+                {"card_idx": card_idx, "name": compound, "smiles": smiles, "inchikey": inchikey}
+            )
+
+    score_row_for_panel = score_row.copy()
+    if use_pubchem_for_score and overrides:
+        adjusted_scan_df = scan_df.copy()
+        applied_overrides = 0
+
+        for signature in card_signatures:
+            override_smiles = _to_text(overrides.get(str(signature["card_idx"]))).strip()
+            if not override_smiles:
+                continue
+
+            mask = (
+                (adjusted_scan_df["_compound"] == signature["compound"])
+                & (adjusted_scan_df["_library_usi"] == signature["library_usi"])
+                & (adjusted_scan_df["_smiles"] == signature["smiles"])
+                & (adjusted_scan_df["_inchikey"] == signature["inchikey"])
+            )
+            if mask.any():
+                adjusted_scan_df.loc[mask, "_smiles"] = override_smiles
+                applied_overrides += 1
+
+        if applied_overrides > 0:
+            supporting_matches = int(score_row_for_panel["supporting_matches"])
+            total_matches = int(score_row_for_panel["total_matches"])
+            support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+
+            tanimoto_score, tanimoto_source = scan_tanimoto(adjusted_scan_df["_smiles"].tolist(), support_fraction)
+            if tanimoto_source == "tanimoto_ecfp4":
+                tanimoto_source = "tanimoto_ecfp4_pubchem"
+            elif tanimoto_source == "single_structure":
+                tanimoto_source = "single_structure_pubchem"
+
+            entropy_similarity = float(score_row_for_panel["entropy_similarity"])
+            max_cosine = float(score_row_for_panel["max_cosine"])
+            confidence_score = 100.0 * (
+                0.50 * support_fraction
+                + 0.15 * float(tanimoto_score)
+                + 0.25 * entropy_similarity
+                + 0.10 * max_cosine
+            )
+            confidence_score = min(100.0, max(0.0, confidence_score))
+            confidence_label, badge_color = _confidence_category(confidence_score)
+
+            score_row_for_panel["tanimoto_score"] = round(float(tanimoto_score), 4)
+            score_row_for_panel["tanimoto_source"] = tanimoto_source
+            score_row_for_panel["confidence_score"] = round(float(confidence_score), 1)
+            score_row_for_panel["confidence_label"] = confidence_label
+            score_row_for_panel["badge_color"] = badge_color
+
+    metric_card = _build_reliability_breakdown_panel(
+        task_id,
+        scan,
+        workflow_choice,
+        resolved_workflow,
+        score_row_for_panel,
+        use_entropy_similarity,
+    )
+
     compounds_card = dbc.Card(
         [
             dbc.CardHeader(html.H5("Matched Compound Structures")),
@@ -563,7 +895,7 @@ def _build_detail_panel(task_id, scan, workflow_choice, use_entropy_similarity=T
         ]
     )
 
-    return html.Div([metric_card, compounds_card])
+    return html.Div([metric_card, compounds_card]), compounds_data
 
 
 def _build_intro_panel():
