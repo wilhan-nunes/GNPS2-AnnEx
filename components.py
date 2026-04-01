@@ -732,12 +732,30 @@ def _build_detail_panel(
         can_search_pubchem = not smiles
 
         if can_search_pubchem:
+            preview_children = (
+                html.Img(
+                    src=image_url,
+                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                )
+                if image_url
+                else html.Small(
+                    "No structure image yet. Select a PubChem match to display one.",
+                    className="text-muted d-block",
+                )
+            )
+
+            structure_preview = html.Div(
+                id={"type": "pubchem-structure-preview", "index": card_idx},
+                children=preview_children,
+                className="mb-2",
+            )
+
             pubchem_section = html.Div(
                 [
                     # Hidden store carries compound identity to the search callback
                     dcc.Store(
                         id={"type": "compound-info-store", "index": card_idx},
-                        data={"name": compound, "inchikey": inchikey, "smiles": smiles},
+                        data={"name": compound, "inchikey": inchikey, "smiles": smiles, "inchi": inchi},
                     ),
                     html.Hr(className="my-2"),
                     html.Small("PubChem structure lookup", className="text-muted fw-semibold d-block mb-1"),
@@ -747,15 +765,11 @@ def _build_detail_panel(
                         placeholder="Type a compound name to fuzzy-search PubChem",
                         className="mb-2",
                     ),
-                    html.Small(
-                        f"Library suggestion: {compound}",
-                        className="text-muted d-block mb-2",
-                    ),
                     dbc.Button(
                         "Search PubChem for structure",
                         id={"type": "pubchem-search-btn", "index": card_idx},
                         size="sm",
-                        color="secondary",
+                        color="info",
                         outline=True,
                         n_clicks=0,
                     ),
@@ -763,10 +777,19 @@ def _build_detail_panel(
                 ]
             )
         else:
+            structure_preview = (
+                html.Img(
+                    src=image_url,
+                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                )
+                if image_url
+                else None
+            )
             pubchem_section = html.Div()
 
         card_body = [
             html.H6(compound),
+            structure_preview,
             html.Div(f"Cosine: {round(float(cosine), 4)}"),
             html.Small(
                 f"Library: {lib_name}" if lib_name else "Library name unavailable",
@@ -795,14 +818,7 @@ def _build_detail_panel(
             pubchem_section,
         ]
 
-        if image_url:
-            card_body.insert(
-                1,
-                html.Img(
-                    src=image_url,
-                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
-                ),
-            )
+        card_body = [c for c in card_body if c is not None]
 
         cards.append(
             dbc.Col(
