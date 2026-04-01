@@ -80,6 +80,7 @@ def _compute_scan_level_confidence(
     library_usi_col = _find_first_column(df, ["library_usi", "LibraryUSI", "library usi"])
     spectrum_file_col = _find_first_column(df, ["SpectrumFile"])
     smiles_col = _find_first_column(df, ["Smiles", "SMILES", "smiles"])
+    inchikey_col = _find_first_column(df, ["InChIKey", "inchikey", "INCHIKEY"])
     precursor_mz_col = _find_first_column(df, ["SpecMZ", "Precursor_MZ", "precursor_mz"])
 
     if scan_col is None:
@@ -115,6 +116,22 @@ def _compute_scan_level_confidence(
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
         total_matches = len(scan_df)
+
+        if smiles_col is not None:
+            smiles_missing = (
+                scan_df[smiles_col].astype(str).str.strip().str.lower().isin({"", "none", "nan", "n/a", "na", "null"})
+            )
+        else:
+            smiles_missing = pd.Series(True, index=scan_df.index)
+
+        if inchikey_col is not None:
+            inchikey_missing = (
+                scan_df[inchikey_col].astype(str).str.strip().str.lower().isin({"", "none", "nan", "n/a", "na", "null"})
+            )
+        else:
+            inchikey_missing = pd.Series(True, index=scan_df.index)
+
+        missing_structures = int((smiles_missing & inchikey_missing).sum())
 
         grouped = (
             scan_df.groupby("_support_group_key", as_index=False)
@@ -182,6 +199,7 @@ def _compute_scan_level_confidence(
                 "support_group_key": support_group_key,
                 "supporting_matches": int(best["count"]),
                 "total_matches": int(total_matches),
+                "missing_structures": missing_structures,
                 "mean_cosine": round(mean_cosine, 4),
                 "max_cosine": round(max_cosine, 4),
                 "entropy_similarity": round(float(entropy_similarity), 4),

@@ -542,6 +542,7 @@ def compute_and_render_scores(matches_json, params):
             "compound_link",
             "structure_key",
             "support",
+            "missing_structures",
             "tanimoto_score",
             "tanimoto_source",
             "entropy_similarity",
@@ -562,6 +563,7 @@ def compute_and_render_scores(matches_json, params):
             {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
             {"name": "Representative Structure Key", "id": "structure_key"},
             {"name": "Support (planar structure or isomer family / total)", "id": "support"},
+            {"name": "Missing structures (no SMILES/InChIKey)", "id": "missing_structures"},
             {"name": "Tanimoto (ECFP4)", "id": "tanimoto_score"},
             {"name": "Tanimoto Source", "id": "tanimoto_source"},
             {"name": "Entropy Similarity", "id": "entropy_similarity"},
@@ -612,6 +614,12 @@ def compute_and_render_scores(matches_json, params):
                 "if": {"column_id": "tanimoto_score"},
                 "width": "100px",
                 "maxWidth": "100px",
+                "textAlign": "center",
+            },
+            {
+                "if": {"column_id": "missing_structures"},
+                "width": "120px",
+                "maxWidth": "120px",
                 "textAlign": "center",
             },
             {
