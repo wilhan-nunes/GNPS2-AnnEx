@@ -138,8 +138,8 @@ def _compute_scan_level_confidence(
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
 
-        # Tanimoto structural similarity (ECFP4, mean pairwise across unique SMILES).
-        # Falls back to support_fraction when fewer than 2 unique valid SMILES exist.
+        # Tanimoto structural similarity (ECFP4, mean pairwise across unique library SMILES).
+        # PubChem lookups are handled only on user request in detail view.
         scan_smiles = scan_df[smiles_col].tolist() if smiles_col is not None else []
         tanimoto_score, tanimoto_source = scan_tanimoto(scan_smiles, support_fraction)
 
