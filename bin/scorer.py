@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 def _confidence_category(score):
     if score >= 80:
-        return "Well-supported", "success"
+        return "Consistent evidence", "success"
     if score >= 55:
-        return "Ambiguous", "warning"
-    return "Insufficient evidence", "danger"
+        return "Inconclusive", "warning"
+    return "Inconsistent evidence", "danger"
 
 
 
