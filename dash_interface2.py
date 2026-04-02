@@ -3,7 +3,8 @@ import logging
 import urllib.parse
 
 import dash
-from dash import ALL, MATCH, Input, Output, State, ctx, dash_table, dcc, html, no_update
+from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html, no_update
+import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 
 from app import app
@@ -577,201 +578,156 @@ def compute_and_render_scores(matches_json, params):
             "scan",
             "precursor_mz",
             "compound_link",
-            "structure_key",
             "support",
             "adjusted_support_score",
-            "missing_structures",
-            "tanimoto_score",
-            "tanimoto_source",
-            "entropy_similarity",
-            "entropy_source",
-            "mean_cosine",
-            "max_cosine",
             "confidence_score",
             "confidence_label",
+            "structure_key",
+            "tanimoto_score",
+            "mean_cosine",
+            "max_cosine",
+            "entropy_similarity",
+            "tanimoto_source",
+            "entropy_source",
+            "missing_structures",
         ]
     ]
 
-    results_table = dash_table.DataTable(
+    results_table = dag.AgGrid(
         id="confidence-datatable",
-        data=table_df.to_dict("records"),
-        columns=[
-            {"name": "Scan", "id": "scan"},
-            {"name": "Precursor m/z", "id": "precursor_mz"},
-            {"name": "Proposed Compound", "id": "compound_link", "presentation": "markdown"},
-            {"name": "Representative Structure Key", "id": "structure_key"},
-            {"name": "Support (planar structure or isomer family / total)", "id": "support"},
-            {"name": "Adjusted Support (Laplace \u03b1=2, \u03b2=3)", "id": "adjusted_support_score"},
-            {"name": "Missing structures (no SMILES/InChIKey)", "id": "missing_structures"},
-            {"name": "Tanimoto (ECFP4)", "id": "tanimoto_score"},
-            {"name": "Tanimoto Source", "id": "tanimoto_source"},
-            {"name": "Entropy Similarity", "id": "entropy_similarity"},
-            {"name": "Entropy Source", "id": "entropy_source"},
-            {"name": "Mean Cosine", "id": "mean_cosine"},
-            {"name": "Max Cosine", "id": "max_cosine"},
-            {"name": "Score", "id": "confidence_score"},
-            {"name": "Evidence Level", "id": "confidence_label"},
+        rowData=table_df.to_dict("records"),
+        columnDefs=[
+            {"headerName": "Scan", "field": "scan", "maxWidth": 95},
+            {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
+            {
+                "headerName": "Proposed Compound",
+                "field": "compound_link",
+                "cellRenderer": "markdown",
+                "minWidth": 180,
+            },
+            {
+                "headerName": "Support (planar structure or isomer family / total)",
+                "field": "support",
+                "minWidth": 220,
+            },
+            {
+                "headerName": f"Adjusted Support (Laplace α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
+                "field": "adjusted_support_score",
+                "maxWidth": 190,
+                "cellStyle": {
+                    "styleConditions": [
+                        {
+                            "condition": "params.value >= 0.9",
+                            "style": {"backgroundColor": "#0c2c84", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value >= 0.8 && params.value < 0.9",
+                            "style": {"backgroundColor": "#225ea8", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value >= 0.7 && params.value < 0.8",
+                            "style": {"backgroundColor": "#1d91c0", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value >= 0.6 && params.value < 0.7",
+                            "style": {"backgroundColor": "#41b6c4", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value >= 0.5 && params.value < 0.6",
+                            "style": {"backgroundColor": "#7fcdbb", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value < 0.5",
+                            "style": {"backgroundColor": "#ccece6", "color": "#0b3d4f", "fontWeight": 600, "textAlign": "center"},
+                        },
+                    ],
+                    "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
+                },
+            },
+            {
+                "headerName": "Score",
+                "field": "confidence_score",
+                "maxWidth": 95,
+                "cellStyle": {"fontWeight": 600, "textAlign": "center"},
+            },
+            {
+                "headerName": "Evidence Level",
+                "field": "confidence_label",
+                "maxWidth": 170,
+                "cellStyle": {
+                    "styleConditions": [
+                        {
+                            "condition": "params.value === 'Consistent evidence'",
+                            "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value === 'Inconclusive'",
+                            "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                        },
+                        {
+                            "condition": "params.value === 'Inconsistent evidence'",
+                            "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                        },
+                    ],
+                    "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
+                },
+            },
+            {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
+            {
+                "headerName": "Tanimoto (ECFP4)",
+                "field": "tanimoto_score",
+                "maxWidth": 120,
+                "cellStyle": {"textAlign": "center"},
+            },
+            {"headerName": "Mean Cosine", "field": "mean_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
+            {"headerName": "Max Cosine", "field": "max_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
+            {
+                "headerName": "Entropy Similarity",
+                "field": "entropy_similarity",
+                "maxWidth": 140,
+                "cellStyle": {"textAlign": "center"},
+            },
+            {
+                "headerName": "Tanimoto Source",
+                "field": "tanimoto_source",
+                "minWidth": 180,
+                "cellStyle": {"textAlign": "center"},
+            },
+            {
+                "headerName": "Entropy Source",
+                "field": "entropy_source",
+                "minWidth": 165,
+                "cellStyle": {"textAlign": "center"},
+            },
+            {
+                "headerName": "Missing structures (no SMILES/InChIKey)",
+                "field": "missing_structures",
+                "maxWidth": 145,
+                "cellStyle": {"textAlign": "center"},
+            },
         ],
-        page_action="native",
-        page_current=0,
-        page_size=25,
-        sort_action="native",
-        filter_action="native",
-        style_table={"overflowX": "auto"},
-        style_header={"fontWeight": "bold"},
-        style_cell={
-            "textAlign": "left",
-            "padding": "6px",
-            "fontSize": "13px",
-            "whiteSpace": "normal",
-            "height": "auto",
-            "maxWidth": "240px",
+        defaultColDef={
+            "sortable": True,
+            "filter": True,
+            "resizable": True,
+            "wrapText": True,
+            "autoHeight": True,
+            "wrapHeaderText": True,
+            "autoHeaderHeight": True,
+            "floatingFilter": True,
+            "cellStyle": {"fontSize": "13px", "lineHeight": "1.35"},
         },
-        style_cell_conditional=[
-            {
-                "if": {"column_id": "compound_link"},
-                "width": "180px",
-                "maxWidth": "180px",
-                "overflow": "hidden",
-                "textOverflow": "ellipsis",
-            },
-            {
-                "if": {"column_id": "confidence_score"},
-                "width": "90px",
-                "maxWidth": "90px",
-                "textAlign": "center",
-                "fontWeight": "600",
-            },
-            {
-                "if": {"column_id": "confidence_label"},
-                "width": "130px",
-                "maxWidth": "130px",
-                "textAlign": "center",
-                "fontWeight": "600",
-            },
-            {
-                "if": {"column_id": "tanimoto_score"},
-                "width": "100px",
-                "maxWidth": "100px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "adjusted_support_score"},
-                "width": "145px",
-                "maxWidth": "145px",
-                "textAlign": "center",
-                "fontWeight": "600",
-            },
-            {
-                "if": {"column_id": "missing_structures"},
-                "width": "120px",
-                "maxWidth": "120px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "tanimoto_source"},
-                "width": "155px",
-                "maxWidth": "155px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "entropy_similarity"},
-                "width": "115px",
-                "maxWidth": "115px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "entropy_source"},
-                "width": "150px",
-                "maxWidth": "150px",
-                "textAlign": "center",
-            },
-            {
-                "if": {"column_id": "scan"},
-                "width": "95px",
-                "maxWidth": "95px",
-            },
-            {
-                "if": {"column_id": "precursor_mz"},
-                "width": "110px",
-                "maxWidth": "110px",
-                "textAlign": "center",
-            },
-        ],
-        style_data_conditional=[
-            {
-                "if": {
-                    "filter_query": '{confidence_label} = "Consistent evidence"',
-                    "column_id": "confidence_label",
-                },
-                "backgroundColor": "#d1e7dd",
-                "color": "#0f5132",
-            },
-            {
-                "if": {
-                    "filter_query": '{confidence_label} = "Inconclusive"',
-                    "column_id": "confidence_label",
-                },
-                "backgroundColor": "#fff3cd",
-                "color": "#664d03",
-            },
-            {
-                "if": {
-                    "filter_query": '{confidence_label} = "Inconsistent evidence"',
-                    "column_id": "confidence_label",
-                },
-                "backgroundColor": "#f8d7da",
-                "color": "#842029",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} >= 0.9",
-                },
-                "backgroundColor": "#0c2c84",
-                "color": "#f7fbff",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} >= 0.8 && {adjusted_support_score} < 0.9",
-                },
-                "backgroundColor": "#225ea8",
-                "color": "#f7fbff",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} >= 0.7 && {adjusted_support_score} < 0.8",
-                },
-                "backgroundColor": "#1d91c0",
-                "color": "#f7fbff",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} >= 0.6 && {adjusted_support_score} < 0.7",
-                },
-                "backgroundColor": "#41b6c4",
-                "color": "#08306b",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} >= 0.5 && {adjusted_support_score} < 0.6",
-                },
-                "backgroundColor": "#7fcdbb",
-                "color": "#08306b",
-            },
-            {
-                "if": {
-                    "column_id": "adjusted_support_score",
-                    "filter_query": "{adjusted_support_score} < 0.5",
-                },
-                "backgroundColor": "#ccece6",
-                "color": "#0b3d4f",
-            },
-        ],
+        dashGridOptions={
+            "pagination": True,
+            "paginationPageSize": 25,
+            "animateRows": False,
+            "rowHeight": 40,
+            "theme": "themeBalham",
+            "enableCellTextSelection": True,
+            "ensureDomOrder": True,
+        },
+        className="ag-theme-alpine",
+        style={"height": "760px", "width": "100%"},
     )
 
     return html.Div(
