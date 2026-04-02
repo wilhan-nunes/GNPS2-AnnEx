@@ -13,6 +13,7 @@ dash-core-components
 dash-html-components
 dash-renderer
 dash-table
+dash-ag-grid
 rdkit-pypi
 git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage@46779f30733553aeffd826782abbbe46bc960498
 ms_entropy
