@@ -221,6 +221,52 @@
             line-height: 1.55;
         }
 
+        .example-task {
+            padding: 1rem;
+            border-radius: 18px;
+            border: 1px solid rgba(27, 36, 48, 0.1);
+            background: rgba(255, 255, 255, 0.62);
+        }
+
+        .example-task strong {
+            display: block;
+            margin-bottom: 0.35rem;
+            font-size: 0.82rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--accent-dark);
+        }
+
+        .example-task p {
+            margin: 0;
+            font-size: 0.94rem;
+        }
+
+        .example-task code {
+            font-family: var(--mono);
+            font-size: 0.92em;
+            background: rgba(27, 36, 48, 0.06);
+            padding: 0.15rem 0.35rem;
+            border-radius: 6px;
+        }
+
+        .example-task-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.7rem;
+            margin-top: 0.85rem;
+        }
+
+        .example-task-links a {
+            color: var(--accent-dark);
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .example-task-links a:hover {
+            text-decoration: underline;
+        }
+
         .meta {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -328,6 +374,17 @@
                         <a class="ghost" href="/dashinterface2/">Open dashboard only</a>
                     </div>
                 </form>
+
+                <div class="example-task">
+                    <strong>Try an example</strong>
+                    <p>
+                        Use task <code>b22ff1bc41624e29a28cf6e12fe17ad5</code> to quickly explore how the app works.
+                    </p>
+                    <div class="example-task-links">
+                        <a href="/dashinterface2/?task=b22ff1bc41624e29a28cf6e12fe17ad5&amp;workflow=auto">Open example in AnnEx</a>
+                        <a href="https://gnps2.org/status?task=b22ff1bc41624e29a28cf6e12fe17ad5">View task on GNPS2</a>
+                    </div>
+                </div>
 
                 <div class="note">
                     Advanced scoring options, including spectral entropy similarity, remain available once the
