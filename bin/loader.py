@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 
 from gnpsdata import taskresult
+from gnpsdata import taskinfo
 from gnpsdata import workflow_classicnetworking
 from gnpsdata import workflow_fbmn
 
@@ -130,3 +131,33 @@ def _load_library_matches(task_id, workflow_choice):
     if matches_df is None:
         return matches_df
     return matches_df.copy()
+
+
+@cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
+def _load_task_information_cached(task_id):
+    task_id = (task_id or "").strip()
+    if not task_id:
+        return {}
+
+    try:
+        task_details = taskinfo.get_task_information(task_id, gnps2=True)
+    except Exception as exc:
+        logger.warning("Could not load task information for %s: %s", task_id, exc)
+        return {}
+
+    if isinstance(task_details, dict):
+        return task_details
+
+    return {"value": task_details}
+
+
+def _load_task_information(task_id):
+    task_id = (task_id or "").strip()
+    if not task_id:
+        return {}
+
+    task_details = _load_task_information_cached(task_id)
+    if isinstance(task_details, dict):
+        return dict(task_details)
+
+    return {}
