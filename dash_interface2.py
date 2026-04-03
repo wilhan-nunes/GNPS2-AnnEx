@@ -11,6 +11,7 @@ from app import app
 from components import (
     _build_detail_panel,
     _build_tanimoto_heatmap_figure,
+    _format_workflow_label,
     _render_mol_png_data_uri,
     _search_pubchem_candidates,
 )
@@ -20,7 +21,7 @@ import io
 
 import pandas as pd
 
-from bin.loader import _load_library_matches
+from bin.loader import _load_library_matches, _load_task_information
 from bin.scorer import _compute_scan_level_confidence
 
 
@@ -37,6 +38,102 @@ logger = logging.getLogger(__name__)
 
 LAPLACE_ALPHA = 4.0
 LAPLACE_BETA = 5.0
+
+
+def _taskinfo_key(value):
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+def _taskinfo_has_value(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) > 0
+    return True
+
+
+def _stringify_taskinfo_value(value, max_length=160):
+    if not _taskinfo_has_value(value):
+        return ""
+
+    if isinstance(value, dict):
+        text = ", ".join(f"{key}={val}" for key, val in list(value.items())[:4])
+    elif isinstance(value, (list, tuple, set)):
+        if all(not isinstance(item, (dict, list, tuple, set)) for item in value):
+            text = ", ".join(str(item) for item in value)
+        else:
+            text = f"{len(value)} item(s)"
+    else:
+        text = str(value)
+
+    return _truncate_text(text, max_length=max_length)
+
+
+def _iter_taskinfo_items(payload):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield key, value
+            yield from _iter_taskinfo_items(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_taskinfo_items(item)
+
+
+def _find_taskinfo_value(task_info, candidate_keys):
+    if not isinstance(task_info, dict):
+        return ""
+
+    normalized_keys = {_taskinfo_key(key) for key in candidate_keys}
+
+    for key, value in _iter_taskinfo_items(task_info):
+        if _taskinfo_key(key) in normalized_keys and _taskinfo_has_value(value):
+            return value
+
+    return ""
+
+
+def _build_task_metadata_details(task_info, resolved_workflow):
+    if not isinstance(task_info, dict) or not task_info:
+        return None
+
+    task_name = _find_taskinfo_value(task_info, ["taskname", "task_name", "title", "description"])
+    status_value = _find_taskinfo_value(task_info, ["task_status", "taskstatus", "status"])
+    workflow_value = _find_taskinfo_value(task_info, ["workflowname", "workflow", "workflowtype"])
+    created_value = _find_taskinfo_value(
+        task_info,
+        ["created", "create_time", "createtime", "creationtime", "submitted", "submittedon", "starttime", "createdon"],
+    )
+
+    summary_rows = []
+    for label, value in [
+        ("Task name", task_name),
+        ("Status", status_value),
+        ("Workflow", workflow_value or _format_workflow_label(resolved_workflow)),
+        ("Created", created_value),
+    ]:
+        if _taskinfo_has_value(value):
+            summary_rows.append(
+                html.Div(
+                    [
+                        html.Span(f"{label}: ", className="fw-semibold"),
+                        html.Span(_stringify_taskinfo_value(value)),
+                    ],
+                    className="mb-1",
+                )
+            )
+
+    if not summary_rows:
+        return None
+
+    return html.Details(
+        [
+            html.Summary("GNPS task information", className="fw-semibold"),
+            html.Div(summary_rows, className="small mt-2"),
+        ],
+        className="mt-3",
+    )
 
 
 def _get_url_param(param_dict, key, default=""):
@@ -511,11 +608,18 @@ def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, u
         },
     )
 
+    task_info = {}
+    try:
+        task_info = _load_task_information(task_id)
+    except Exception as exc:
+        logger.warning("Could not retrieve task information for %s: %s", task_id, exc)
+
     params = {
         "task_id": task_id,
         "workflow_choice": workflow_choice,
         "resolved_workflow": resolved_workflow,
         "use_entropy_similarity": use_entropy_similarity,
+        "task_info": task_info,
     }
 
     return matches_df.to_json(orient="split"), params, status
@@ -535,6 +639,7 @@ def compute_and_render_scores(matches_json, params):
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
     use_entropy_similarity = params["use_entropy_similarity"]
+    task_info = params.get("task_info") or {}
 
     try:
         matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
@@ -555,6 +660,7 @@ def compute_and_render_scores(matches_json, params):
         "Inconclusive": int((summary_df["confidence_label"] == "Inconclusive").sum()),
         "Inconsistent evidence": int((summary_df["confidence_label"] == "Inconsistent evidence").sum()),
     }
+    task_metadata_details = _build_task_metadata_details(task_info, resolved_workflow)
 
     table_df = summary_df.copy()
     table_df["adjusted_support_score"] = (
@@ -611,7 +717,7 @@ def compute_and_render_scores(matches_json, params):
                 "minWidth": 220,
             },
             {
-                "headerName": f"Adjusted Support (Laplace α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
+                "headerName": f"Adjusted Support (Additive smoothing α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
                 "field": "adjusted_support_score",
                 "maxWidth": 190,
                 "cellStyle": {
@@ -748,6 +854,7 @@ def compute_and_render_scores(matches_json, params):
                                     f" · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}",
                                 ]
                             ),
+                            task_metadata_details,
                             dbc.Badge(
                                 f"Consistent evidence: {badge_counts['Consistent evidence']}",
                                 color="success",
@@ -1035,6 +1142,8 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
     else:
         source_note = "All SMILES sourced from library."
 
+    heatmap_max_width = max(420, min(960, len(compounds_data) * 38 + 240))
+
     return dbc.Card(
         [
             dbc.CardHeader(html.H5("Pairwise Tanimoto Similarity Heatmap")),
@@ -1048,11 +1157,19 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
                         ]
                     ),
                     html.Hr(),
-                    dcc.Graph(figure=fig, config={"displayModeBar": False}),
+                    html.Div(
+                        dcc.Graph(
+                            figure=fig,
+                            config={"displayModeBar": False},
+                            style={"width": "100%"},
+                        ),
+                        style={"width": "100%", "maxWidth": f"{heatmap_max_width}px", "margin": "0 auto"},
+                    ),
                 ]
             ),
         ],
         className="mb-3",
+        style={"width": "100%", "maxWidth": f"{heatmap_max_width}px", "margin": "0 auto"},
     )
 
 
