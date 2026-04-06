@@ -463,7 +463,7 @@ def render_detail_panel(search):
             use_entropy_similarity=use_entropy_similarity,
         )
         score_panel = panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
-        compounds_panel = panel_ui.children[1] if getattr(panel_ui, "children", None) else html.Div()
+        compounds_panel = html.Div(panel_ui.children[1:]) if getattr(panel_ui, "children", None) else html.Div()
         return score_panel, compounds_panel, {
             "compounds": compounds_data,
             "task_id": task_id,
