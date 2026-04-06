@@ -875,33 +875,81 @@ def _build_detail_panel(
     scan_df["_structure_key"] = scan_df.apply(_canonical_structure_key, axis=1)
     scan_df = _annotate_support_groups(scan_df)
 
-    detail_rows = (
-        scan_df.sort_values("_cosine", ascending=False)
-        .drop_duplicates(subset=["_compound", "_library_usi", "_smiles", "_inchikey"])
-        .head(25)
-    )
+    def _detail_group_key(row):
+        structure_key = _to_text(row.get("_structure_key"))
+        if structure_key and structure_key != "UNKNOWN_STRUCTURE":
+            return f"structure::{structure_key}"
+        fallback_parts = [
+            _to_text(row.get("_compound")),
+            _to_text(row.get("_library_usi")),
+            _to_text(row.get("_smiles")),
+            _to_text(row.get("_inchikey")),
+            _to_text(row.get("_inchi")),
+        ]
+        return "fallback::" + "||".join(fallback_parts)
 
-    cards = []
-    seen_keys: set = set()
+    def _ordered_unique_texts(values):
+        ordered = []
+        seen = set()
+        for value in values:
+            text = _to_text(value)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            ordered.append(text)
+        return ordered
+
+    detail_rows = scan_df.sort_values("_cosine", ascending=False).copy()
+    detail_rows["_detail_group_key"] = detail_rows.apply(_detail_group_key, axis=1)
+
+    table_rows = []
     compounds_data: list = []
     card_signatures: list = []
     overrides = dict(pubchem_overrides or {}) if isinstance(pubchem_overrides, dict) else {}
 
-    for card_idx, (_, row) in enumerate(detail_rows.iterrows()):
-        compound = _to_text(row.get("_compound")) or "Unknown Compound"
-        lib_usi = _to_text(row.get("_library_usi"))
-        lib_name = _to_text(row.get("_library_name"))
-        smiles = _to_text(row.get("_smiles"))
-        inchikey = _to_text(row.get("_inchikey"))
-        inchi = _to_text(row.get("_inchi"))
-        cosine = row.get("_cosine", 0.0)
+    grouped_detail_rows = []
+    for _, group_df in detail_rows.groupby("_detail_group_key", sort=False):
+        grouped_detail_rows.append(group_df.sort_values("_cosine", ascending=False))
+        if len(grouped_detail_rows) >= 25:
+            break
 
+    max_group_matches = max((len(group_df) for group_df in grouped_detail_rows), default=0)
+    max_group_cosine = max((float(group_df["_cosine"].max()) for group_df in grouped_detail_rows), default=0.0)
+
+    for card_idx, group_df in enumerate(grouped_detail_rows):
+        compound_names = _ordered_unique_texts(group_df["_compound"].tolist())
+        library_names = _ordered_unique_texts(group_df["_library_name"].tolist())
+        library_usis = _ordered_unique_texts(group_df["_library_usi"].tolist())
+        smiles_candidates = _ordered_unique_texts(group_df["_smiles"].tolist())
+        inchikey_candidates = _ordered_unique_texts(group_df["_inchikey"].tolist())
+        inchi_candidates = _ordered_unique_texts(group_df["_inchi"].tolist())
+
+        compound = compound_names[0] if compound_names else "Unknown Compound"
+        smiles = smiles_candidates[0] if smiles_candidates else ""
+        inchikey = inchikey_candidates[0] if inchikey_candidates else ""
+        inchi = inchi_candidates[0] if inchi_candidates else ""
+        cosine = float(group_df["_cosine"].max()) if len(group_df) else 0.0
         image_url = _render_mol_png_data_uri(smiles=smiles, inchi=inchi)
-        normalized_library_usi = _normalize_library_usi(lib_usi)
+        normalized_library_usis = [_normalize_library_usi(usi) for usi in library_usis]
+        normalized_library_usis = [usi for usi in normalized_library_usis if usi]
 
-        mirror_url = ""
-        if normalized_library_usi:
-            mirror_url = _build_mirror_plot_link(query_usi, normalized_library_usi)
+        mirror_links = []
+        for link_idx, normalized_library_usi in enumerate(normalized_library_usis[:5]):
+            mirror_links.append(
+                html.A(
+                    f"Mirror plot {link_idx + 1}",
+                    href=_build_mirror_plot_link(query_usi, normalized_library_usi),
+                    target="_blank",
+                    className="d-inline-block me-2 mb-1",
+                )
+            )
+        if len(normalized_library_usis) > 5:
+            mirror_links.append(
+                html.Small(
+                    f"+{len(normalized_library_usis) - 5} more library match(es)",
+                    className="text-muted d-block",
+                )
+            )
 
         can_search_pubchem = not smiles
 
@@ -921,17 +969,15 @@ def _build_detail_panel(
             structure_preview = html.Div(
                 id={"type": "pubchem-structure-preview", "index": card_idx},
                 children=preview_children,
-                className="mb-2",
+                className="mb-0",
             )
 
             pubchem_section = html.Div(
                 [
-                    # Hidden store carries compound identity to the search callback
                     dcc.Store(
                         id={"type": "compound-info-store", "index": card_idx},
                         data={"name": compound, "inchikey": inchikey, "smiles": smiles, "inchi": inchi},
                     ),
-                    html.Hr(className="my-2"),
                     html.Small("PubChem structure lookup", className="text-muted fw-semibold d-block mb-1"),
                     dbc.Input(
                         id={"type": "pubchem-name-input", "index": card_idx},
@@ -951,75 +997,119 @@ def _build_detail_panel(
                 ]
             )
         else:
-            structure_preview = (
+            structure_preview = html.Div(
                 html.Img(
                     src=image_url,
                     style={"width": "180px", "height": "180px", "objectFit": "contain"},
                 )
                 if image_url
-                else None
+                else html.Small("No structure image available.", className="text-muted d-block"),
+                id={"type": "pubchem-structure-preview", "index": card_idx},
+                className="mb-0",
             )
-            pubchem_section = html.Div()
+            pubchem_section = html.Div(
+                [
+                    dcc.Store(
+                        id={"type": "compound-info-store", "index": card_idx},
+                        data={"name": compound, "inchikey": inchikey, "smiles": smiles, "inchi": inchi},
+                    ),
+                    html.Div(id={"type": "pubchem-candidates-div", "index": card_idx}, className="d-none"),
+                ]
+            )
 
-        card_body = [
-            html.H6(compound),
-            structure_preview,
-            html.Div(f"Cosine: {round(float(cosine), 4)}"),
+        alias_note = ""
+        if len(compound_names) > 1:
+            alias_note = ", ".join(compound_names[1:4])
+            if len(compound_names) > 4:
+                alias_note += f", +{len(compound_names) - 4} more"
+
+        libraries_note = ", ".join(library_names[:4]) if library_names else ""
+        if len(library_names) > 4:
+            libraries_note += f", +{len(library_names) - 4} more"
+
+        structure_text = smiles if smiles else inchi if inchi else ""
+        if len(structure_text) > 90:
+            structure_text = structure_text[:87].rstrip() + "..."
+
+        summary_cell = html.Div(
+            [
+                html.Div(
+                    [
+                        html.Strong(compound),
+                        dbc.Badge(f"{len(group_df)} match(es)", color="secondary", className="ms-2"),
+                        dbc.Badge(
+                            "Most matches",
+                            color="success",
+                            className="ms-2",
+                        )
+                        if len(group_df) == max_group_matches and max_group_matches > 0
+                        else None,
+                        dbc.Badge(
+                            "Top cosine",
+                            color="info",
+                            className="ms-2",
+                        )
+                        if math.isclose(cosine, max_group_cosine, rel_tol=1e-9, abs_tol=1e-9)
+                        else None,
+                    ],
+                    className="mb-1",
+                ),
+                html.Small(f"Best cosine: {cosine:.4f}", className="d-block"),
+                html.Small(
+                    f"InChIKey: {inchikey}" if inchikey else "InChIKey unavailable",
+                    className="text-muted d-block",
+                ),
+                html.Small(
+                    "SMILES/InChI available" if structure_text else "SMILES/InChI unavailable",
+                    className="text-muted d-block mt-1",
+                ),
+                html.Small(structure_text, className="text-mono d-block"),
+                html.Small(
+                    f"Also annotated as: {alias_note}" if alias_note else "Single compound label in this group",
+                    className="text-muted d-block mt-2",
+                ),
+                html.Small(
+                    f"Libraries: {libraries_note}" if libraries_note else "Library name unavailable",
+                    className="text-muted d-block",
+                ),
+            ]
+        )
+
+        action_cell_children = [
             html.Small(
-                f"Library: {lib_name}" if lib_name else "Library name unavailable",
-                className="text-muted",
+                f"{len(normalized_library_usis)} unique library match(es)"
+                if normalized_library_usis
+                else "Library USI unavailable",
+                className="text-muted d-block mb-1",
             ),
-            html.Br(),
-            html.Small(
-                f"Library USI: {normalized_library_usi}" if normalized_library_usi else "Library USI unavailable",
-                className="text-muted",
-            ),
-            html.Br(),
-            html.Small(f"InChIKey: {inchikey}" if inchikey else "InChIKey unavailable", className="text-muted"),
-            html.Br(),
-            html.Small(
-                "SMILES/InChI available" if (smiles or inchi) else "SMILES/InChI unavailable",
-                className="text-muted",
-            ),
-            html.Br(),
-            html.Small(smiles if smiles else inchi if inchi else "", className="text-mono"),
-            html.Hr(),
-            html.Div(
-                html.A("Open mirror plot", href=mirror_url, target="_blank")
-                if mirror_url
-                else "Mirror plot link unavailable for this hit"
-            ),
-            pubchem_section,
+            html.Div(mirror_links if mirror_links else "Mirror plot links unavailable for this structure"),
         ]
+        if can_search_pubchem:
+            action_cell_children.extend([html.Hr(className="my-2"), pubchem_section])
+        else:
+            action_cell_children.append(html.Div(pubchem_section, className="d-none"))
 
-        card_body = [c for c in card_body if c is not None]
-
-        cards.append(
-            dbc.Col(
-                dbc.Card(dbc.CardBody(card_body), className="mb-3"),
-                lg=4,
-                md=6,
-                sm=12,
+        table_rows.append(
+            html.Tr(
+                [
+                    html.Td(structure_preview, style={"width": "210px", "verticalAlign": "top"}),
+                    html.Td(summary_cell, style={"verticalAlign": "top", "minWidth": "320px"}),
+                    html.Td(html.Div(action_cell_children), style={"width": "320px", "verticalAlign": "top"}),
+                ]
             )
         )
 
         card_signatures.append(
             {
                 "card_idx": card_idx,
-                "compound": compound,
-                "library_usi": lib_usi,
-                "smiles": smiles,
-                "inchikey": inchikey,
+                "row_indices": group_df.index.tolist(),
             }
         )
 
-        # Accumulate unique compounds for the heatmap (deduplicated by SMILES, else by name)
-        key = smiles if smiles else compound
-        if key not in seen_keys:
-            seen_keys.add(key)
-            compounds_data.append(
-                {"card_idx": card_idx, "name": compound, "smiles": smiles, "inchikey": inchikey}
-            )
+        heatmap_name = compound
+        if len(compound_names) > 1:
+            heatmap_name = f"{compound} (+{len(compound_names) - 1})"
+        compounds_data.append({"card_idx": card_idx, "name": heatmap_name, "smiles": smiles, "inchikey": inchikey})
 
     score_row_for_panel = score_row.copy()
     if use_pubchem_for_score and overrides:
@@ -1031,12 +1121,7 @@ def _build_detail_panel(
             if not override_smiles:
                 continue
 
-            mask = (
-                (adjusted_scan_df["_compound"] == signature["compound"])
-                & (adjusted_scan_df["_library_usi"] == signature["library_usi"])
-                & (adjusted_scan_df["_smiles"] == signature["smiles"])
-                & (adjusted_scan_df["_inchikey"] == signature["inchikey"])
-            )
+            mask = adjusted_scan_df.index.isin(signature["row_indices"])
             if mask.any():
                 adjusted_scan_df.loc[mask, "_smiles"] = override_smiles
                 applied_overrides += 1
@@ -1081,7 +1166,28 @@ def _build_detail_panel(
     compounds_card = dbc.Card(
         [
             dbc.CardHeader(html.H5("Matched Compound Structures")),
-            dbc.CardBody(dbc.Row(cards) if cards else html.Div("No compounds to display.")),
+            dbc.CardBody(
+                dbc.Table(
+                    [
+                        html.Thead(
+                            html.Tr(
+                                [
+                                    html.Th("Structure"),
+                                    html.Th("Match Summary"),
+                                    html.Th("Library Evidence / PubChem"),
+                                ]
+                            )
+                        ),
+                        html.Tbody(table_rows),
+                    ],
+                    bordered=False,
+                    hover=True,
+                    responsive=True,
+                    className="align-middle mb-0",
+                )
+                if table_rows
+                else html.Div("No compounds to display.")
+            ),
         ]
     )
 

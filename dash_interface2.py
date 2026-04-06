@@ -485,7 +485,7 @@ def render_detail_panel(search):
     prevent_initial_call=True,
 )
 def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
-    """Update only the score panel so PubChem selection does not remount compound cards."""
+    """Update only the score panel so PubChem selection does not remount the structure table."""
     if not scan_data:
         return html.Div()
 
@@ -904,7 +904,7 @@ def compute_and_render_scores(matches_json, params):
     prevent_initial_call=True,
 )
 def search_pubchem_for_card(n_clicks, manual_name_query, compound_info):
-    """Fetch PubChem candidates for one compound card and render a dropdown picker."""
+    """Fetch PubChem candidates for one structure row and render a dropdown picker."""
     if not n_clicks or not compound_info:
         return no_update
 
@@ -1032,7 +1032,7 @@ def apply_pubchem_override(dropdown_values, dropdown_ids, current_overrides):
     prevent_initial_call=True,
 )
 def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
-    """Update structure previews on missing-structure cards after PubChem selection."""
+    """Update structure previews on missing-structure rows after PubChem selection."""
     preview_ids = preview_ids or []
     compound_infos = compound_infos or []
 
@@ -1140,7 +1140,7 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
     elif n_missing:
         source_note = (
             f"{n_missing} compound(s) have no SMILES — cells are blank. "
-            "Type a name and use 'Search PubChem' on the cards above, then enable the toggle below."
+            "Type a name and use 'Search PubChem' in the table above, then enable the toggle below."
         )
     else:
         source_note = "All SMILES sourced from library."
