@@ -199,7 +199,7 @@ def _build_tanimoto_heatmap_figure(compounds_data: list, use_pubchem: bool = Fal
                     f"N/A — no SMILES for: {', '.join(missing)}"
                 )
 
-    colorscale = [[0.0, "#d35d47"], [0.5, "#d48a18"], [1.0, "#1d9a6c"]]
+    colorscale = [[0.0, "#f80000"], [0.5, "#d48a18"], [1.0, "#1d9a6c"]]
     cell_px = 38
     height = max(320, n * cell_px + 150)
 

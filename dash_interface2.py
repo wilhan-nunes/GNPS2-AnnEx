@@ -709,6 +709,7 @@ def compute_and_render_scores(matches_json, params):
                 "headerName": "Proposed Compound",
                 "field": "compound_link",
                 "cellRenderer": "markdown",
+                "linkTarget": "_blank",
                 "minWidth": 180,
             },
             {
@@ -719,6 +720,7 @@ def compute_and_render_scores(matches_json, params):
             {
                 "headerName": f"Adjusted Support (Additive smoothing α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
                 "field": "adjusted_support_score",
+                "headerTooltip": "Adjusted support score with additive (Laplace) smoothing to mitigate small-sample effects. alpha = number of supporting matches added; beta = alpha + number of non-supporting matches added.",
                 "maxWidth": 190,
                 "cellStyle": {
                     "styleConditions": [
@@ -824,6 +826,7 @@ def compute_and_render_scores(matches_json, params):
             "cellStyle": {"fontSize": "13px", "lineHeight": "1.35"},
         },
         dashGridOptions={
+            "tooltipShowDelay": 10,
             "pagination": True,
             "paginationPageSize": 25,
             "animateRows": False,
