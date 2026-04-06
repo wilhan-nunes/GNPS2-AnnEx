@@ -637,6 +637,180 @@ def _build_mirror_plot_link(query_usi, library_usi):
     return f"https://metabolomics-usi.gnps2.org/dashinterface/?{params}"
 
 
+MASST_API_URL = "https://masst-records.gnps2.org/masst_records.json?sql="
+
+
+def _fetch_masst_context(inchikey_first_blocks: list) -> pd.DataFrame:
+    """
+    Query the MASST records API for biological context of the given InChIKey first blocks.
+
+    Joins masst_table → library_table → redu_table to retrieve SampleType and
+    UBERONBodyPartName counts. Returns an empty DataFrame on failure.
+    """
+    blocks = [b for b in inchikey_first_blocks if b and len(b) >= 5]
+    if not blocks:
+        return pd.DataFrame(), ""
+
+    in_clause = ", ".join(f"'{b}'" for b in blocks)
+    sql = f"""
+WITH filtered AS (
+  SELECT m.mri_id_int, m.spectrum_id_int
+  FROM masst_table m
+  WHERE m.spectrum_id_int IN (
+    SELECT spectrum_id_int FROM library_table
+    WHERE InChIKey_smiles_firstBlock IN ({in_clause})
+  )
+),
+best_per_mri AS (
+  SELECT mri_id_int, COUNT(DISTINCT spectrum_id_int) AS unique_spectra
+  FROM filtered GROUP BY mri_id_int
+)
+SELECT rd.SampleType, rd.UBERONBodyPartName,
+       COUNT(*) AS num_samples,
+       SUM(b.unique_spectra) AS total_spectra
+FROM best_per_mri b
+JOIN redu_table rd ON b.mri_id_int = rd.mri_id_int
+WHERE rd.SampleType IS NOT NULL AND rd.SampleType != ''
+GROUP BY rd.SampleType, rd.UBERONBodyPartName
+ORDER BY num_samples DESC
+LIMIT 100
+""".strip()
+
+    url = MASST_API_URL + urllib.parse.quote(sql)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "TopKonfidence/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        if not isinstance(data, dict) or not data.get("ok") or not data.get("rows"):
+            return pd.DataFrame(), sql
+        columns = data["columns"]
+        rows = data["rows"]
+        return pd.DataFrame(rows, columns=columns), sql
+    except Exception:
+        logger.debug("MASST context fetch failed for InChIKeys %s", blocks)
+        return pd.DataFrame(), sql
+
+
+def _build_masst_context_card(inchikey_first_blocks: list):
+    """
+    Build a Dash card showing biological context (SampleType + body part) from MASST/REDU.
+    Returns None if no data is available.
+    """
+    df, sql = _fetch_masst_context(inchikey_first_blocks)
+
+    sql_debug = html.Details(
+        [
+            html.Summary("SQL query", style={"cursor": "pointer", "fontSize": "0.8rem"}),
+            html.Pre(sql, style={"fontSize": "0.75rem", "whiteSpace": "pre-wrap", "wordBreak": "break-all"}),
+        ],
+        className="mt-2",
+    )
+
+    if df.empty:
+        return dbc.Card(
+            [
+                dbc.CardHeader(html.H5("Biological Context (MASST/REDU)")),
+                dbc.CardBody([
+                    html.Div(
+                        "No MASST/REDU biological context found for these structures.",
+                        className="text-muted small",
+                    ),
+                    sql_debug,
+                ]),
+            ],
+            className="mt-3",
+        )
+
+    # Aggregate by SampleType for the table
+    sample_type_counts = (
+        df.groupby("SampleType", as_index=False)["num_samples"]
+        .sum()
+        .sort_values("num_samples", ascending=False)
+        .head(15)
+    )
+
+    sample_type_table_rows = [
+        html.Tr([
+            html.Th("Sample Type", style={"width": "70%"}),
+            html.Th("Samples", style={"width": "30%", "textAlign": "right"}),
+        ])
+    ] + [
+        html.Tr([
+            html.Td(row["SampleType"]),
+            html.Td(str(int(row["num_samples"])), style={"textAlign": "right"}),
+        ])
+        for _, row in sample_type_counts.iterrows()
+    ]
+
+    # Top body parts table (non-empty UBERONBodyPartName)
+    body_part_df = df[df["UBERONBodyPartName"].notna() & (df["UBERONBodyPartName"] != "")]
+    body_part_counts = (
+        body_part_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"]
+        .sum()
+        .sort_values("num_samples", ascending=False)
+        .head(10)
+    )
+
+    table_rows = [
+        html.Tr([
+            html.Th("Body Part", style={"width": "70%"}),
+            html.Th("Samples", style={"width": "30%", "textAlign": "right"}),
+        ])
+    ] + [
+        html.Tr([
+            html.Td(row["UBERONBodyPartName"]),
+            html.Td(str(int(row["num_samples"])), style={"textAlign": "right"}),
+        ])
+        for _, row in body_part_counts.iterrows()
+    ]
+
+    total_samples = int(df["num_samples"].sum())
+    total_spectra = int(df["total_spectra"].sum()) if "total_spectra" in df.columns else 0
+    summary = html.Small(
+        f"Found in {total_samples:,} REDU samples across {total_spectra:,} spectra.",
+        className="text-muted d-block mb-2",
+    )
+
+    body_children = [summary]
+    if not sample_type_counts.empty:
+        body_children.append(html.H6("Top sample types", className="mb-1"))
+        body_children.append(
+            dbc.Table(
+                html.Tbody(sample_type_table_rows),
+                bordered=False,
+                striped=True,
+                size="sm",
+                className="mb-0",
+            )
+        )
+    if not body_part_counts.empty:
+        body_children.append(html.H6("Top body parts", className="mt-3 mb-1"))
+        body_children.append(
+            dbc.Table(
+                html.Tbody(table_rows),
+                bordered=False,
+                striped=True,
+                size="sm",
+                className="mb-0",
+            )
+        )
+
+    inchikey_labels = html.Small(
+        "Queried InChIKey first blocks: " + ", ".join(inchikey_first_blocks),
+        className="text-muted d-block mt-2",
+    )
+    body_children.append(inchikey_labels)
+    body_children.append(sql_debug)
+
+    return dbc.Card(
+        [
+            dbc.CardHeader(html.H5("Biological Context (MASST/REDU)")),
+            dbc.CardBody(body_children),
+        ],
+        className="mt-3",
+    )
+
+
 def _build_detail_panel(
     task_id,
     scan,
@@ -911,4 +1085,12 @@ def _build_detail_panel(
         ]
     )
 
-    return html.Div([metric_card, compounds_card]), compounds_data
+    # Collect unique first blocks from all inchikeys in this scan's matches
+    inchikey_first_blocks = sorted({
+        ik.split("-")[0]
+        for ik in scan_df["_inchikey"].tolist()
+        if ik and "-" in ik and len(ik.split("-")[0]) >= 5
+    })
+    masst_card = _build_masst_context_card(inchikey_first_blocks)
+
+    return html.Div([metric_card, compounds_card, masst_card]), compounds_data
