@@ -30,6 +30,7 @@ dash_app = dash.Dash(
     server=app,
     url_base_pathname="/dashinterface2/",
     external_stylesheets=[dbc.themes.BOOTSTRAP],
+    suppress_callback_exceptions=True,
 )
 
 dash_app.title = "GNPS2-AnnEx"
@@ -38,6 +39,125 @@ logger = logging.getLogger(__name__)
 
 LAPLACE_ALPHA = 4.0
 LAPLACE_BETA = 5.0
+
+# Column definitions for the summary AG Grid table.
+# Kept at module level so the column-visibility callback can reference them
+# without re-building the full spec on every toggle.
+_SUMMARY_COLUMN_DEFS = [
+    {"headerName": "Scan", "field": "scan", "maxWidth": 95},
+    {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
+    {
+        "headerName": "Proposed Compound",
+        "field": "compound_link",
+        "cellRenderer": "markdown",
+        "linkTarget": "_blank",
+        "minWidth": 180,
+    },
+    {
+        "headerName": "Support (planar structure or isomer family / total)",
+        "field": "support",
+        "minWidth": 220,
+    },
+    {
+        "headerName": f"Adjusted Support (Additive smoothing α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
+        "field": "adjusted_support_score",
+        "headerTooltip": "Adjusted support score with additive (Laplace) smoothing to mitigate small-sample effects. alpha = number of supporting matches added; beta = alpha + number of non-supporting matches added.",
+        "maxWidth": 190,
+        "cellStyle": {
+            "styleConditions": [
+                {
+                    "condition": "params.value >= 0.9",
+                    "style": {"backgroundColor": "#0c2c84", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value >= 0.8 && params.value < 0.9",
+                    "style": {"backgroundColor": "#225ea8", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value >= 0.7 && params.value < 0.8",
+                    "style": {"backgroundColor": "#1d91c0", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value >= 0.6 && params.value < 0.7",
+                    "style": {"backgroundColor": "#41b6c4", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value >= 0.5 && params.value < 0.6",
+                    "style": {"backgroundColor": "#7fcdbb", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value < 0.5",
+                    "style": {"backgroundColor": "#ccece6", "color": "#0b3d4f", "fontWeight": 600, "textAlign": "center"},
+                },
+            ],
+            "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
+        },
+    },
+    {
+        "headerName": "Score",
+        "field": "confidence_score",
+        "maxWidth": 95,
+        "cellStyle": {"fontWeight": 600, "textAlign": "center"},
+    },
+    {
+        "headerName": "Evidence Level",
+        "field": "confidence_label",
+        "maxWidth": 170,
+        "cellStyle": {
+            "styleConditions": [
+                {
+                    "condition": "params.value === 'Consistent evidence'",
+                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value === 'Inconclusive'",
+                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value === 'Inconsistent evidence'",
+                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                },
+            ],
+            "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
+        },
+    },
+    {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
+    {
+        "headerName": "Tanimoto (ECFP4)",
+        "field": "tanimoto_score",
+        "maxWidth": 120,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {"headerName": "Mean Cosine", "field": "mean_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
+    {"headerName": "Max Cosine", "field": "max_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
+    {
+        "headerName": "Entropy Similarity",
+        "field": "entropy_similarity",
+        "maxWidth": 140,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Tanimoto Source",
+        "field": "tanimoto_source",
+        "minWidth": 180,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Entropy Source",
+        "field": "entropy_source",
+        "minWidth": 165,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Missing structures (no SMILES/InChIKey)",
+        "field": "missing_structures",
+        "maxWidth": 145,
+        "cellStyle": {"textAlign": "center"},
+    },
+]
+
+# Fields hidden by default (diagnostic / advanced columns).
+_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "missing_structures", "adjusted_support_score"}
 
 
 def _taskinfo_key(value):
@@ -679,141 +799,18 @@ def compute_and_render_scores(matches_json, params):
         ),
         axis=1,
     )
-    table_df = table_df[
-        [
-            "scan",
-            "precursor_mz",
-            "compound_link",
-            "support",
-            "adjusted_support_score",
-            "confidence_score",
-            "confidence_label",
-            "structure_key",
-            "tanimoto_score",
-            "mean_cosine",
-            "max_cosine",
-            "entropy_similarity",
-            "tanimoto_source",
-            "entropy_source",
-            "missing_structures",
-        ]
+    table_df = table_df[[col["field"] for col in _SUMMARY_COLUMN_DEFS]]
+
+    initial_visible = {col["field"] for col in _SUMMARY_COLUMN_DEFS} - _DEFAULT_HIDDEN_FIELDS
+    initial_col_defs = [
+        {**col, "hide": col["field"] not in initial_visible}
+        for col in _SUMMARY_COLUMN_DEFS
     ]
 
     results_table = dag.AgGrid(
         id="confidence-datatable",
         rowData=table_df.to_dict("records"),
-        columnDefs=[
-            {"headerName": "Scan", "field": "scan", "maxWidth": 95},
-            {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
-            {
-                "headerName": "Proposed Compound",
-                "field": "compound_link",
-                "cellRenderer": "markdown",
-                "linkTarget": "_blank",
-                "minWidth": 180,
-            },
-            {
-                "headerName": "Support (planar structure or isomer family / total)",
-                "field": "support",
-                "minWidth": 220,
-            },
-            {
-                "headerName": f"Adjusted Support (Additive smoothing α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
-                "field": "adjusted_support_score",
-                "headerTooltip": "Adjusted support score with additive (Laplace) smoothing to mitigate small-sample effects. alpha = number of supporting matches added; beta = alpha + number of non-supporting matches added.",
-                "maxWidth": 190,
-                "cellStyle": {
-                    "styleConditions": [
-                        {
-                            "condition": "params.value >= 0.9",
-                            "style": {"backgroundColor": "#0c2c84", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value >= 0.8 && params.value < 0.9",
-                            "style": {"backgroundColor": "#225ea8", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value >= 0.7 && params.value < 0.8",
-                            "style": {"backgroundColor": "#1d91c0", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value >= 0.6 && params.value < 0.7",
-                            "style": {"backgroundColor": "#41b6c4", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value >= 0.5 && params.value < 0.6",
-                            "style": {"backgroundColor": "#7fcdbb", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value < 0.5",
-                            "style": {"backgroundColor": "#ccece6", "color": "#0b3d4f", "fontWeight": 600, "textAlign": "center"},
-                        },
-                    ],
-                    "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
-                },
-            },
-            {
-                "headerName": "Score",
-                "field": "confidence_score",
-                "maxWidth": 95,
-                "cellStyle": {"fontWeight": 600, "textAlign": "center"},
-            },
-            {
-                "headerName": "Evidence Level",
-                "field": "confidence_label",
-                "maxWidth": 170,
-                "cellStyle": {
-                    "styleConditions": [
-                        {
-                            "condition": "params.value === 'Consistent evidence'",
-                            "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value === 'Inconclusive'",
-                            "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
-                        },
-                        {
-                            "condition": "params.value === 'Inconsistent evidence'",
-                            "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
-                        },
-                    ],
-                    "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
-                },
-            },
-            {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
-            {
-                "headerName": "Tanimoto (ECFP4)",
-                "field": "tanimoto_score",
-                "maxWidth": 120,
-                "cellStyle": {"textAlign": "center"},
-            },
-            {"headerName": "Mean Cosine", "field": "mean_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
-            {"headerName": "Max Cosine", "field": "max_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
-            {
-                "headerName": "Entropy Similarity",
-                "field": "entropy_similarity",
-                "maxWidth": 140,
-                "cellStyle": {"textAlign": "center"},
-            },
-            {
-                "headerName": "Tanimoto Source",
-                "field": "tanimoto_source",
-                "minWidth": 180,
-                "cellStyle": {"textAlign": "center"},
-            },
-            {
-                "headerName": "Entropy Source",
-                "field": "entropy_source",
-                "minWidth": 165,
-                "cellStyle": {"textAlign": "center"},
-            },
-            {
-                "headerName": "Missing structures (no SMILES/InChIKey)",
-                "field": "missing_structures",
-                "maxWidth": 145,
-                "cellStyle": {"textAlign": "center"},
-            },
-        ],
+        columnDefs=initial_col_defs,
         defaultColDef={
             "sortable": True,
             "filter": True,
@@ -882,11 +879,37 @@ def compute_and_render_scores(matches_json, params):
                     dbc.CardHeader(html.H5("Scan-Level Annotations")),
                     dbc.CardBody(
                         [
-                            html.Small(
-                                "Click a proposed compound to open the detail view with structure images and mirror-plot links.",
-                                className="text-muted",
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        html.Small(
+                                            "Click a proposed compound to open the detail view with structure images and mirror-plot links.",
+                                            className="text-muted",
+                                        ),
+                                    ),
+                                    dbc.Col(
+                                        dbc.DropdownMenu(
+                                            label="Columns",
+                                            children=dbc.Checklist(
+                                                id="column-visibility-checklist",
+                                                options=[
+                                                    {"label": col["headerName"].split("(")[0].strip(), "value": col["field"]}
+                                                    for col in _SUMMARY_COLUMN_DEFS
+                                                ],
+                                                value=list(initial_visible),
+                                                className="px-3 py-2",
+                                                style={"minWidth": "220px"},
+                                            ),
+                                            size="sm",
+                                            align_end=True,
+                                        ),
+                                        width="auto",
+                                    ),
+                                ],
+                                align="center",
+                                className="mb-2",
                             ),
-                            html.Hr(),
+                            html.Hr(className="mt-0"),
                             results_table,
                         ]
                     ),
@@ -894,6 +917,30 @@ def compute_and_render_scores(matches_json, params):
             ),
         ]
     )
+
+
+@dash_app.callback(
+    Output("confidence-datatable", "columnDefs"),
+    Input("column-visibility-checklist", "value"),
+    prevent_initial_call=True,
+)
+def update_column_visibility(visible_fields):
+    """Show/hide columns in the summary table based on the toggle checklist."""
+    visible = set(visible_fields or [])
+    return [{**col, "hide": col["field"] not in visible} for col in _SUMMARY_COLUMN_DEFS]
+
+
+@dash_app.callback(
+    Output("spectrum-collapse", "is_open"),
+    Input("spectrum-collapse-btn", "n_clicks"),
+    State("spectrum-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_spectrum_collapse(n_clicks, is_open):
+    """Toggle the query spectrum panel open/closed."""
+    if n_clicks:
+        return not is_open
+    return is_open
 
 
 @dash_app.callback(
