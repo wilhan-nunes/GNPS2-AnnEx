@@ -461,6 +461,7 @@ BODY = dbc.Container(
         dcc.Store(id="run-params-store", storage_type="memory"),
         dcc.Store(id="scan-data-store", storage_type="memory"),
         dcc.Store(id="pubchem-overrides-store", storage_type="memory"),
+        dcc.Download(id="download-summary"),
         INFO_MODAL,
         dbc.Row(
             [
@@ -931,20 +932,32 @@ def compute_and_render_scores(matches_json, params):
                                         ),
                                     ),
                                     dbc.Col(
-                                        dbc.DropdownMenu(
-                                            label="Columns",
-                                            children=dbc.Checklist(
-                                                id="column-visibility-checklist",
-                                                options=[
-                                                    {"label": col["headerName"].split("(")[0].strip(), "value": col["field"]}
-                                                    for col in _SUMMARY_COLUMN_DEFS
-                                                ],
-                                                value=list(initial_visible),
-                                                className="px-3 py-2",
-                                                style={"minWidth": "220px"},
-                                            ),
-                                            size="sm",
-                                            align_end=True,
+                                        html.Div(
+                                            [
+                                                dbc.Button(
+                                                    "⬇ Export CSV",
+                                                    id="download-csv-btn",
+                                                    color="outline-secondary",
+                                                    size="sm",
+                                                    className="me-2",
+                                                ),
+                                                dbc.DropdownMenu(
+                                                    label="Columns",
+                                                    children=dbc.Checklist(
+                                                        id="column-visibility-checklist",
+                                                        options=[
+                                                            {"label": col["headerName"].split("(")[0].strip(), "value": col["field"]}
+                                                            for col in _SUMMARY_COLUMN_DEFS
+                                                        ],
+                                                        value=list(initial_visible),
+                                                        className="px-3 py-2",
+                                                        style={"minWidth": "220px"},
+                                                    ),
+                                                    size="sm",
+                                                    align_end=True,
+                                                ),
+                                            ],
+                                            className="d-flex align-items-center",
                                         ),
                                         width="auto",
                                     ),
@@ -971,6 +984,43 @@ def update_column_visibility(visible_fields):
     """Show/hide columns in the summary table based on the toggle checklist."""
     visible = set(visible_fields or [])
     return [{**col, "hide": col["field"] not in visible} for col in _SUMMARY_COLUMN_DEFS]
+
+
+@dash_app.callback(
+    Output("download-summary", "data"),
+    Input("download-csv-btn", "n_clicks"),
+    [State("matches-store", "data"), State("run-params-store", "data")],
+    prevent_initial_call=True,
+)
+def download_summary_csv(n_clicks, matches_json, params):
+    """Export the full annotation summary (all columns, clean values) as a CSV."""
+    if not n_clicks or matches_json is None or params is None:
+        return no_update
+
+    task_id = params.get("task_id", "unknown")
+    resolved_workflow = params.get("resolved_workflow", "auto")
+    use_entropy_similarity = params.get("use_entropy_similarity", False)
+
+    try:
+        matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
+        summary_df = _compute_scan_level_confidence(
+            matches_df,
+            task_id=task_id,
+            workflow_choice=resolved_workflow,
+            use_entropy_similarity=use_entropy_similarity,
+        )
+    except Exception:
+        return no_update
+
+    export_df = summary_df.copy()
+    export_df["adjusted_support_score"] = (
+        (export_df["supporting_matches"].astype(float) + LAPLACE_ALPHA)
+        / (export_df["total_matches"].astype(float) + LAPLACE_BETA)
+    ).round(3)
+    export_df["task_id"] = task_id
+
+    filename = f"annex_summary_{task_id[:12]}.csv"
+    return dcc.send_data_frame(export_df.to_csv, filename, index=False)
 
 
 @dash_app.callback(
