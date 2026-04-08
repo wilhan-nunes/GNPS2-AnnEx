@@ -691,14 +691,21 @@ LIMIT 100
         return pd.DataFrame(), sql
 
 
-def _build_masst_context_card(inchikey_first_blocks: list):
+def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str = ""):
     """
     Build a Dash card showing biological context (SampleType + body part) from MASST/REDU.
     Includes three Plotly charts and a CSV download link.
+    compound_label: optional compound name shown in the card header.
     """
     import plotly.graph_objects as go
 
     df, sql = _fetch_masst_context(inchikey_first_blocks)
+
+    _card_title = (
+        f"Biological Context (MASST/REDU) — {compound_label}"
+        if compound_label
+        else "Biological Context (MASST/REDU)"
+    )
 
     sql_debug = html.Details(
         [
@@ -711,7 +718,7 @@ def _build_masst_context_card(inchikey_first_blocks: list):
     if df.empty:
         return dbc.Card(
             [
-                dbc.CardHeader(html.H5("Biological Context (MASST/REDU)")),
+                dbc.CardHeader(html.H5(_card_title)),
                 dbc.CardBody([
                     html.Div(
                         "No MASST/REDU biological context found for these structures.",
@@ -894,7 +901,7 @@ def _build_masst_context_card(inchikey_first_blocks: list):
 
     return dbc.Card(
         [
-            dbc.CardHeader(html.H5("Biological Context (MASST/REDU)")),
+            dbc.CardHeader(html.H5(_card_title)),
             dbc.CardBody(body_children),
         ],
         className="mt-3",
@@ -1216,6 +1223,7 @@ def _build_detail_panel(
     table_rows = []
     compounds_data: list = []
     card_signatures: list = []
+    compound_masst_items: list = []  # (compound_name, inchikey) per group
     overrides = dict(pubchem_overrides or {}) if isinstance(pubchem_overrides, dict) else {}
 
     grouped_detail_rows = []
@@ -1419,6 +1427,7 @@ def _build_detail_panel(
         if len(compound_names) > 1:
             heatmap_name = f"{compound} (+{len(compound_names) - 1})"
         compounds_data.append({"card_idx": card_idx, "name": heatmap_name, "smiles": smiles, "inchikey": inchikey})
+        compound_masst_items.append((compound, inchikey))
 
     score_row_for_panel = score_row.copy()
     if use_pubchem_for_score and overrides:
@@ -1500,13 +1509,37 @@ def _build_detail_panel(
         ]
     )
 
-    # Collect unique first blocks from all inchikeys in this scan's matches
-    inchikey_first_blocks = sorted({
-        ik.split("-")[0]
-        for ik in scan_df["_inchikey"].tolist()
-        if ik and "-" in ik and len(ik.split("-")[0]) >= 5
-    })
-    masst_card = _build_masst_context_card(inchikey_first_blocks)
+    # Build per-structure MASST cards (deduplicated by InChIKey first block)
+    seen_blocks: set = set()
+    per_compound_masst = []
+    for cname, cik in compound_masst_items:
+        first_block = cik.split("-")[0] if cik and "-" in cik else ""
+        if not first_block or len(first_block) < 5 or first_block in seen_blocks:
+            continue
+        seen_blocks.add(first_block)
+        per_compound_masst.append((cname, first_block))
+
+    if len(per_compound_masst) == 1:
+        cname, fblock = per_compound_masst[0]
+        masst_card = _build_masst_context_card([fblock], compound_label=cname)
+    elif len(per_compound_masst) > 1:
+        accordion_items = []
+        for cname, fblock in per_compound_masst:
+            inner = _build_masst_context_card([fblock], compound_label=cname)
+            accordion_items.append(
+                dbc.AccordionItem(inner, title=f"{cname} ({fblock})")
+            )
+        masst_card = dbc.Card(
+            [
+                dbc.CardHeader(html.H5("Biological Context (MASST/REDU) — Per Structure")),
+                dbc.CardBody(
+                    dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
+                ),
+            ],
+            className="mt-3",
+        )
+    else:
+        masst_card = html.Div()
 
     spectrum_card = _build_query_spectrum_card(query_usi, precomputed_entropy=precomputed_query_entropy)
 
