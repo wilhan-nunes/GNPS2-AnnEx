@@ -811,6 +811,166 @@ def _build_masst_context_card(inchikey_first_blocks: list):
     )
 
 
+def _build_query_spectrum_card(query_usi: str):
+    """
+    Build a collapsible card showing the query spectrum as a stick plot plus spectral
+    entropy stats. Fetches the spectrum from the GNPS2 USI API at render time.
+    Returns an empty Div when query_usi is unavailable.
+    """
+    if not query_usi:
+        return html.Div()
+
+    try:
+        import plotly.graph_objects as go
+        from spectral_entropy import compute_entropy_payload, entropy_quality_label
+
+        payload = compute_entropy_payload(query_usi, top_n=100)
+    except Exception as exc:
+        logger.warning("Could not fetch query spectrum for %s: %s", query_usi, exc)
+        return dbc.Card(
+            [
+                dbc.CardHeader(
+                    dbc.Row(
+                        [
+                            dbc.Col(html.H6("Query Spectrum", className="mb-0")),
+                            dbc.Col(
+                                dbc.Button(
+                                    "Show / Hide",
+                                    id="spectrum-collapse-btn",
+                                    size="sm",
+                                    color="secondary",
+                                    outline=True,
+                                    n_clicks=0,
+                                ),
+                                width="auto",
+                            ),
+                        ],
+                        align="center",
+                        className="g-0",
+                    )
+                ),
+                dbc.Collapse(
+                    dbc.CardBody(
+                        dbc.Alert(f"Spectrum unavailable: {exc}", color="warning", className="mb-0")
+                    ),
+                    id="spectrum-collapse",
+                    is_open=False,
+                ),
+            ],
+            className="mb-3",
+        )
+
+    mzs = payload["mzs"]
+    intensities = payload["intensities"]
+    S = payload["entropy"]
+    quality_label, _ = entropy_quality_label(S)
+
+    if "good" in quality_label or "clean" in quality_label:
+        entropy_badge_color = "success"
+    elif "moderate" in quality_label:
+        entropy_badge_color = "warning"
+    elif "noisy" in quality_label or "low" in quality_label:
+        entropy_badge_color = "danger"
+    else:
+        entropy_badge_color = "secondary"
+
+    # Stick plot: each peak is a vertical line (mz, 0) → (mz, intensity)
+    x_vals, y_vals, hover_texts = [], [], []
+    for mz, intensity in zip(mzs, intensities):
+        x_vals.extend([mz, mz, None])
+        y_vals.extend([0, intensity, None])
+        hover_texts.extend([None, f"m/z: {mz:.4f}<br>Rel. intensity: {intensity:.4f}", None])
+
+    fig = go.Figure(
+        go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode="lines",
+            line=dict(color="#3a7ebf", width=1.5),
+            hovertext=hover_texts,
+            hoverinfo="text",
+            showlegend=False,
+        )
+    )
+    fig.update_layout(
+        xaxis_title="m/z",
+        yaxis_title="Relative intensity",
+        margin=dict(l=50, r=20, t=10, b=40),
+        height=260,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(showgrid=True, gridcolor="#eeeeee", zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor="#eeeeee", range=[0, 1.12], zeroline=True, zerolinecolor="#cccccc"),
+    )
+
+    return dbc.Card(
+        [
+            dbc.CardHeader(
+                dbc.Row(
+                    [
+                        dbc.Col(html.H6("Query Spectrum", className="mb-0")),
+                        dbc.Col(
+                            dbc.Button(
+                                "Show / Hide",
+                                id="spectrum-collapse-btn",
+                                size="sm",
+                                color="secondary",
+                                outline=True,
+                                n_clicks=0,
+                            ),
+                            width="auto",
+                        ),
+                    ],
+                    align="center",
+                    className="g-0",
+                )
+            ),
+            dbc.Collapse(
+                dbc.CardBody(
+                    [
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    [
+                                        dbc.Badge(
+                                            f"S = {S:.3f} nats",
+                                            color=entropy_badge_color,
+                                            className="me-2",
+                                            pill=True,
+                                        ),
+                                        html.Small(
+                                            f"{quality_label} · "
+                                            f"{payload['n_peaks_used']} peaks used / {payload['n_peaks_raw']} total",
+                                            className="text-muted",
+                                        ),
+                                    ]
+                                ),
+                                dbc.Col(
+                                    html.Small(
+                                        f"Precursor: {payload['precursor_mz']:.4f} m/z · "
+                                        f"Adduct: {payload['adduct']}",
+                                        className="text-muted",
+                                    ),
+                                    width="auto",
+                                ),
+                            ],
+                            align="center",
+                            className="mb-2",
+                        ),
+                        dcc.Graph(
+                            figure=fig,
+                            config={"displayModeBar": False, "responsive": True},
+                        ),
+                    ]
+                ),
+                id="spectrum-collapse",
+                is_open=False,
+            ),
+        ],
+        className="mb-3",
+    )
+
+
 def _build_detail_panel(
     task_id,
     scan,
@@ -846,6 +1006,7 @@ def _build_detail_panel(
     compound_col = _find_first_column(scan_df, ["Compound_Name", "compound_name", "Compound Name"])
     library_usi_col = _find_first_column(scan_df, ["library_usi", "LibraryUSI", "library usi"])
     library_name_col = _find_first_column(scan_df, ["LibraryName", "library_name", "Library Name"])
+    adduct_col = _find_first_column(scan_df, ["Adduct", "adduct", "Precursor_type", "Precursor Type"])
     spectrum_file_col = _find_first_column(scan_df, ["SpectrumFile"])
     smiles_col = _find_first_column(scan_df, ["Smiles", "SMILES", "smiles"])
     inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
@@ -860,9 +1021,13 @@ def _build_detail_panel(
     scan_df["_compound"] = scan_df[compound_col].astype(str) if compound_col else "Unknown"
     scan_df["_library_usi"] = scan_df[library_usi_col].astype(str) if library_usi_col else ""
     scan_df["_library_name"] = scan_df[library_name_col].astype(str) if library_name_col else ""
+    scan_df["_adduct"] = scan_df[adduct_col].astype(str) if adduct_col else ""
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
+    scan_df["_adduct"] = scan_df["_adduct"].apply(
+        lambda v: "" if _to_text(v).strip().lower() in {"none", "nan"} else _to_text(v).strip()
+    )
     scan_df["_smiles"] = scan_df["_smiles"].apply(
         lambda v: "" if _to_text(v).strip().lower() in {"none", "nan"} else _to_text(v).strip()
     )
@@ -899,6 +1064,28 @@ def _build_detail_panel(
             ordered.append(text)
         return ordered
 
+    def _ordered_unique_library_matches(group_df):
+        ordered_matches = []
+        match_lookup = {}
+
+        for _, row in group_df.iterrows():
+            normalized_library_usi = _normalize_library_usi(row.get("_library_usi"))
+            if not normalized_library_usi:
+                continue
+
+            adduct = _to_text(row.get("_adduct"))
+            existing_match = match_lookup.get(normalized_library_usi)
+            if existing_match is None:
+                existing_match = {"library_usi": normalized_library_usi, "adduct": adduct}
+                match_lookup[normalized_library_usi] = existing_match
+                ordered_matches.append(existing_match)
+                continue
+
+            if not existing_match["adduct"] and adduct:
+                existing_match["adduct"] = adduct
+
+        return ordered_matches
+
     detail_rows = scan_df.sort_values("_cosine", ascending=False).copy()
     detail_rows["_detail_group_key"] = detail_rows.apply(_detail_group_key, axis=1)
 
@@ -919,7 +1106,7 @@ def _build_detail_panel(
     for card_idx, group_df in enumerate(grouped_detail_rows):
         compound_names = _ordered_unique_texts(group_df["_compound"].tolist())
         library_names = _ordered_unique_texts(group_df["_library_name"].tolist())
-        library_usis = _ordered_unique_texts(group_df["_library_usi"].tolist())
+        library_matches = _ordered_unique_library_matches(group_df)
         smiles_candidates = _ordered_unique_texts(group_df["_smiles"].tolist())
         inchikey_candidates = _ordered_unique_texts(group_df["_inchikey"].tolist())
         inchi_candidates = _ordered_unique_texts(group_df["_inchi"].tolist())
@@ -930,24 +1117,22 @@ def _build_detail_panel(
         inchi = inchi_candidates[0] if inchi_candidates else ""
         cosine = float(group_df["_cosine"].max()) if len(group_df) else 0.0
         image_url = _render_mol_png_data_uri(smiles=smiles, inchi=inchi)
-        normalized_library_usis = [_normalize_library_usi(usi) for usi in library_usis]
-        normalized_library_usis = [usi for usi in normalized_library_usis if usi]
+        normalized_library_usis = [match["library_usi"] for match in library_matches]
 
         mirror_links = []
-        for link_idx, normalized_library_usi in enumerate(normalized_library_usis[:5]):
+        for link_idx, library_match in enumerate(library_matches):
+            adduct_label = library_match["adduct"] or "Adduct unavailable"
             mirror_links.append(
-                html.A(
-                    f"Mirror plot {link_idx + 1}",
-                    href=_build_mirror_plot_link(query_usi, normalized_library_usi),
-                    target="_blank",
-                    className="d-inline-block me-2 mb-1",
-                )
-            )
-        if len(normalized_library_usis) > 5:
-            mirror_links.append(
-                html.Small(
-                    f"+{len(normalized_library_usis) - 5} more library match(es)",
-                    className="text-muted d-block",
+                html.Div(
+                    [
+                        html.Span(f"{adduct_label}: ", className="text-muted"),
+                        html.A(
+                            f"Mirror plot {link_idx + 1}",
+                            href=_build_mirror_plot_link(query_usi, library_match["library_usi"]),
+                            target="_blank",
+                        ),
+                    ],
+                    className="mb-1",
                 )
             )
 
@@ -1199,4 +1384,6 @@ def _build_detail_panel(
     })
     masst_card = _build_masst_context_card(inchikey_first_blocks)
 
-    return html.Div([metric_card, compounds_card, masst_card]), compounds_data
+    spectrum_card = _build_query_spectrum_card(query_usi)
+
+    return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data

@@ -17,3 +17,8 @@ def redirect_legacy_dashboard():
         redirect_target = f"{redirect_target}?{query_string}"
 
     return flask.redirect(redirect_target, code=302)
+
+#include health check
+@blueprint.route("/health", methods=["GET"])
+def health_check():
+    return "OK", 200
