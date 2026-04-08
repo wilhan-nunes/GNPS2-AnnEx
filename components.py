@@ -22,6 +22,7 @@ from bin.normalizer import (
     _find_first_column,
     _infer_resolved_workflow,
     _normalize_library_usi,
+    _smiles_to_planar_inchikey,
     _to_text,
     _truncate_text,
 )
@@ -1427,7 +1428,7 @@ def _build_detail_panel(
         if len(compound_names) > 1:
             heatmap_name = f"{compound} (+{len(compound_names) - 1})"
         compounds_data.append({"card_idx": card_idx, "name": heatmap_name, "smiles": smiles, "inchikey": inchikey})
-        compound_masst_items.append((compound, inchikey))
+        compound_masst_items.append((card_idx, compound, inchikey))
 
     score_row_for_panel = score_row.copy()
     if use_pubchem_for_score and overrides:
@@ -1509,11 +1510,17 @@ def _build_detail_panel(
         ]
     )
 
-    # Build per-structure MASST cards (deduplicated by InChIKey first block)
+    # Build per-structure MASST cards (deduplicated by InChIKey first block).
+    # If a PubChem SMILES override exists for a card, derive its InChIKey from that SMILES.
     seen_blocks: set = set()
     per_compound_masst = []
-    for cname, cik in compound_masst_items:
-        first_block = cik.split("-")[0] if cik and "-" in cik else ""
+    for cidx, cname, cik in compound_masst_items:
+        override_smiles = _to_text(overrides.get(str(cidx))).strip()
+        if override_smiles and override_smiles.lower() not in {"none", "nan"}:
+            derived_block = _smiles_to_planar_inchikey(override_smiles)
+            first_block = derived_block if derived_block else (cik.split("-")[0] if cik and "-" in cik else "")
+        else:
+            first_block = cik.split("-")[0] if cik and "-" in cik else ""
         if not first_block or len(first_block) < 5 or first_block in seen_blocks:
             continue
         seen_blocks.add(first_block)
