@@ -44,7 +44,7 @@ LAPLACE_BETA = 5.0
 # Kept at module level so the column-visibility callback can reference them
 # without re-building the full spec on every toggle.
 _SUMMARY_COLUMN_DEFS = [
-    {"headerName": "Scan", "field": "scan", "maxWidth": 95},
+    {"headerName": "Scan", "field": "scan", "maxWidth": 95, "type": "numericColumn", "filter": "agNumberColumnFilter", "valueGetter": {"function": "Number(params.data.scan)"}},
     {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
     {
         "headerName": "Proposed Compound",
@@ -186,7 +186,7 @@ _SUMMARY_COLUMN_DEFS = [
 ]
 
 # Fields hidden by default (diagnostic / advanced columns).
-_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "missing_structures", "adjusted_support_score", "query_entropy_label"}
+_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity"}
 
 
 def _taskinfo_key(value):
@@ -476,6 +476,7 @@ BODY = dbc.Container(
                         [
                             html.Div(id="detail-score-panel"),
                             html.Div(id="detail-compounds-panel"),
+                            html.Div(id="detail-masst-panel"),
                         ],
                         id="detail-panel",
                     ),
@@ -594,6 +595,7 @@ def toggle_controls_for_detail_view(search):
     [
         Output("detail-score-panel", "children"),
         Output("detail-compounds-panel", "children"),
+        Output("detail-masst-panel", "children"),
         Output("scan-data-store", "data"),
     ],
     [Input("url", "search")],
@@ -602,7 +604,7 @@ def render_detail_panel(search):
     query_state = _parse_dashboard_query(search)
 
     if not query_state["detail_mode"]:
-        return html.Div(), html.Div(), None
+        return html.Div(), html.Div(), html.Div(), None
 
     task_id = query_state["task_id"]
     scan = query_state["scan"]
@@ -611,7 +613,7 @@ def render_detail_panel(search):
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
 
     if not task_id or not scan:
-        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), None
+        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), html.Div(), None
 
     try:
         panel_ui, compounds_data = _build_detail_panel(
@@ -621,9 +623,11 @@ def render_detail_panel(search):
             use_entropy_similarity=use_entropy_similarity,
             precomputed_query_entropy=precomputed_query_entropy,
         )
-        score_panel = panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
-        compounds_panel = html.Div(panel_ui.children[1:]) if getattr(panel_ui, "children", None) else html.Div()
-        return score_panel, compounds_panel, {
+        children = panel_ui.children if getattr(panel_ui, "children", None) else []
+        score_panel = children[0] if len(children) > 0 else html.Div()
+        compounds_panel = html.Div(children[1:3]) if len(children) > 1 else html.Div()
+        masst_panel = children[3] if len(children) > 3 else html.Div()
+        return score_panel, compounds_panel, masst_panel, {
             "compounds": compounds_data,
             "task_id": task_id,
             "scan": scan,
@@ -632,11 +636,14 @@ def render_detail_panel(search):
             "precomputed_query_entropy": precomputed_query_entropy,
         }
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), html.Div(), None
+        return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None
 
 
 @dash_app.callback(
-    Output("detail-score-panel", "children", allow_duplicate=True),
+    [
+        Output("detail-score-panel", "children", allow_duplicate=True),
+        Output("detail-masst-panel", "children", allow_duplicate=True),
+    ],
     [
         Input("scan-data-store", "data"),
         Input("pubchem-overrides-store", "data"),
@@ -645,9 +652,9 @@ def render_detail_panel(search):
     prevent_initial_call=True,
 )
 def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
-    """Update only the score panel so PubChem selection does not remount the structure table."""
+    """Update score panel and MASST card on PubChem selection without remounting the structure table."""
     if not scan_data:
-        return html.Div()
+        return html.Div(), html.Div()
 
     task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
@@ -657,7 +664,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
     if not task_id or not scan:
-        return html.Div()
+        return html.Div(), html.Div()
 
     try:
         panel_ui, _ = _build_detail_panel(
@@ -669,9 +676,12 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             use_pubchem_for_score=use_pubchem_for_score,
             precomputed_query_entropy=precomputed_query_entropy,
         )
-        return panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
+        children = panel_ui.children if getattr(panel_ui, "children", None) else []
+        score_panel = children[0] if len(children) > 0 else panel_ui
+        masst_panel = children[3] if len(children) > 3 else html.Div()
+        return score_panel, masst_panel
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger")
+        return dbc.Alert(str(exc), color="danger"), html.Div()
 
 
 @dash_app.callback(
