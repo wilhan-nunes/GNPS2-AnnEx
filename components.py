@@ -694,8 +694,10 @@ LIMIT 100
 def _build_masst_context_card(inchikey_first_blocks: list):
     """
     Build a Dash card showing biological context (SampleType + body part) from MASST/REDU.
-    Returns None if no data is available.
+    Includes three Plotly charts and a CSV download link.
     """
+    import plotly.graph_objects as go
+
     df, sql = _fetch_masst_context(inchikey_first_blocks)
 
     sql_debug = html.Details(
@@ -721,86 +723,174 @@ def _build_masst_context_card(inchikey_first_blocks: list):
             className="mt-3",
         )
 
-    # Aggregate by SampleType for the table
-    sample_type_counts = (
-        df.groupby("SampleType", as_index=False)["num_samples"]
-        .sum()
-        .sort_values("num_samples", ascending=False)
-        .head(15)
-    )
-
-    sample_type_table_rows = [
-        html.Tr([
-            html.Th("Sample Type", style={"width": "70%"}),
-            html.Th("Samples", style={"width": "30%", "textAlign": "right"}),
-        ])
-    ] + [
-        html.Tr([
-            html.Td(row["SampleType"]),
-            html.Td(str(int(row["num_samples"])), style={"textAlign": "right"}),
-        ])
-        for _, row in sample_type_counts.iterrows()
-    ]
-
-    # Top body parts table (non-empty UBERONBodyPartName)
-    body_part_df = df[df["UBERONBodyPartName"].notna() & (df["UBERONBodyPartName"] != "")]
-    body_part_counts = (
-        body_part_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"]
-        .sum()
-        .sort_values("num_samples", ascending=False)
-        .head(10)
-    )
-
-    table_rows = [
-        html.Tr([
-            html.Th("Body Part", style={"width": "70%"}),
-            html.Th("Samples", style={"width": "30%", "textAlign": "right"}),
-        ])
-    ] + [
-        html.Tr([
-            html.Td(row["UBERONBodyPartName"]),
-            html.Td(str(int(row["num_samples"])), style={"textAlign": "right"}),
-        ])
-        for _, row in body_part_counts.iterrows()
-    ]
-
     total_samples = int(df["num_samples"].sum())
     total_spectra = int(df["total_spectra"].sum()) if "total_spectra" in df.columns else 0
+
+    _chart_config = {"displayModeBar": False, "responsive": True}
+    _base_layout = dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(size=10, family="Inter, system-ui, sans-serif"),
+        height=380,
+        margin=dict(l=8, r=8, t=36, b=8),
+    )
+
+    # --- Chart 1 (col 1): Samples by organism type ---
+    org_agg = (
+        df.groupby("SampleType", as_index=False)[["num_samples", "total_spectra"]]
+        .sum()
+        .sort_values("num_samples", ascending=True)
+        .tail(15)
+    )
+    fig_org = go.Figure(
+        go.Bar(
+            x=org_agg["num_samples"],
+            y=org_agg["SampleType"],
+            orientation="h",
+            marker=dict(
+                color=org_agg["num_samples"],
+                colorscale="Teal",
+                showscale=False,
+            ),
+            hovertemplate="%{y}: %{x:,} samples<extra></extra>",
+        )
+    )
+    fig_org.update_layout(
+        title=dict(text="Samples by Organism Type", font=dict(size=12)),
+        xaxis_title="Samples",
+        xaxis=dict(gridcolor="#e8e8e8"),
+        yaxis=dict(automargin=True),
+        **_base_layout,
+    )
+    chart_org = dcc.Graph(figure=fig_org, config=_chart_config, style={"height": "380px"})
+
+    # --- Chart 2 (col 2): Top 15 tissue types — animal samples only ---
+    _non_animal = {
+        "plant", "environmental", "food", "beverage", "food/beverage",
+        "culture medium", "culture", "blank_extraction", "blank",
+        "standard", "qc", "reference material",
+    }
+    body_part_df = df[
+        df["UBERONBodyPartName"].notna()
+        & (df["UBERONBodyPartName"] != "")
+        & ~df["SampleType"].str.lower().isin(_non_animal)
+    ]
+    tissue_agg = (
+        body_part_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"]
+        .sum()
+        .sort_values("num_samples", ascending=True)
+        .tail(15)
+    )
+    fig_tissue = go.Figure(
+        go.Bar(
+            x=tissue_agg["num_samples"],
+            y=tissue_agg["UBERONBodyPartName"],
+            orientation="h",
+            marker=dict(
+                color=tissue_agg["num_samples"],
+                colorscale="Purp",
+                showscale=False,
+            ),
+            hovertemplate="%{y}: %{x:,} samples<extra></extra>",
+        )
+    )
+    fig_tissue.update_layout(
+        title=dict(text="Top 15 Tissue Types (Animal)", font=dict(size=12)),
+        xaxis_title="Samples",
+        xaxis=dict(gridcolor="#e8e8e8"),
+        yaxis=dict(automargin=True),
+        **_base_layout,
+    )
+    chart_tissue = dcc.Graph(figure=fig_tissue, config=_chart_config, style={"height": "380px"})
+
+    # --- Chart 3 (col 3): Bubble — Spectra vs Samples per organism type ---
+    bubble_df = (
+        df.groupby("SampleType", as_index=False)[["num_samples", "total_spectra"]]
+        .sum()
+        .sort_values("num_samples", ascending=False)
+        .head(20)
+    )
+    max_samples = bubble_df["num_samples"].max() or 1
+    bubble_sizes = (bubble_df["num_samples"] / max_samples * 48 + 10).tolist()
+    fig_bubble = go.Figure(
+        go.Scatter(
+            x=bubble_df["num_samples"],
+            y=bubble_df["total_spectra"],
+            mode="markers+text",
+            text=bubble_df["SampleType"],
+            textposition="top center",
+            textfont=dict(size=8, color="#444"),
+            marker=dict(
+                size=bubble_sizes,
+                color=bubble_df["total_spectra"],
+                colorscale=[
+                    [0.0,  "#0d0887"],
+                    [0.2,  "#6a00a8"],
+                    [0.4,  "#b12a90"],
+                    [0.6,  "#e16462"],
+                    [0.8,  "#fca636"],
+                    [1.0,  "#f0f921"],
+                ],
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text="Spectra", font=dict(size=10)),
+                    thickness=10,
+                    len=0.55,
+                    x=1.02,
+                ),
+                opacity=0.85,
+                line=dict(width=1.2, color="rgba(255,255,255,0.8)"),
+            ),
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Samples: %{x:,}<br>"
+                "Spectra: %{y:,}<extra></extra>"
+            ),
+        )
+    )
+    fig_bubble.update_layout(
+        title=dict(text="Spectra vs Samples — Organism Types", font=dict(size=12)),
+        xaxis=dict(title="Samples", gridcolor="#e8e8e8"),
+        yaxis=dict(title="Spectra", gridcolor="#e8e8e8"),
+        **{**_base_layout, "margin": dict(l=8, r=50, t=36, b=8)},
+    )
+    chart_bubble = dcc.Graph(figure=fig_bubble, config=_chart_config, style={"height": "380px"})
+
+    # --- Download link (CSV) ---
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    csv_b64 = base64.b64encode(csv_bytes).decode()
+    download_link = html.A(
+        "Download full table (CSV)",
+        href=f"data:text/csv;base64,{csv_b64}",
+        download="masst_context.csv",
+        className="btn btn-outline-secondary btn-sm",
+    )
+
     summary = html.Small(
         f"Found in {total_samples:,} REDU samples across {total_spectra:,} spectra.",
         className="text-muted d-block mb-2",
     )
-
-    body_children = [summary]
-    if not sample_type_counts.empty:
-        body_children.append(html.H6("Top sample types", className="mb-1"))
-        body_children.append(
-            dbc.Table(
-                html.Tbody(sample_type_table_rows),
-                bordered=False,
-                striped=True,
-                size="sm",
-                className="mb-0",
-            )
-        )
-    if not body_part_counts.empty:
-        body_children.append(html.H6("Top body parts", className="mt-3 mb-1"))
-        body_children.append(
-            dbc.Table(
-                html.Tbody(table_rows),
-                bordered=False,
-                striped=True,
-                size="sm",
-                className="mb-0",
-            )
-        )
-
     inchikey_labels = html.Small(
         "Queried InChIKey first blocks: " + ", ".join(inchikey_first_blocks),
         className="text-muted d-block mt-2",
     )
-    body_children.append(inchikey_labels)
-    body_children.append(sql_debug)
+
+    charts_row = dbc.Row(
+        [
+            dbc.Col(chart_org, width=4),
+            dbc.Col(chart_tissue, width=4),
+            dbc.Col(chart_bubble, width=4),
+        ],
+        className="g-2 mb-2",
+    )
+
+    body_children = [
+        summary,
+        charts_row,
+        download_link,
+        inchikey_labels,
+        sql_debug,
+    ]
 
     return dbc.Card(
         [
@@ -811,10 +901,13 @@ def _build_masst_context_card(inchikey_first_blocks: list):
     )
 
 
-def _build_query_spectrum_card(query_usi: str):
+def _build_query_spectrum_card(query_usi: str, precomputed_entropy=None):
     """
     Build a collapsible card showing the query spectrum as a stick plot plus spectral
     entropy stats. Fetches the spectrum from the GNPS2 USI API at render time.
+
+    precomputed_entropy: float S value from the summary table (carried via URL).
+      Used in the header even when the spectrum fetch fails.
     Returns an empty Div when query_usi is unavailable.
     """
     if not query_usi:
@@ -827,12 +920,26 @@ def _build_query_spectrum_card(query_usi: str):
         payload = compute_entropy_payload(query_usi, top_n=100)
     except Exception as exc:
         logger.warning("Could not fetch query spectrum for %s: %s", query_usi, exc)
+
+        if precomputed_entropy is not None:
+            from spectral_entropy import entropy_quality_label as _eql
+            S_pre = float(precomputed_entropy)
+            ql_pre, _ = _eql(S_pre)
+            _bc = "success" if S_pre >= 1.0 else "warning" if S_pre >= 0.5 else "danger"
+            _header_mid = [
+                dbc.Badge(f"S = {S_pre:.3f} nats", color=_bc, className="me-2", pill=True),
+                html.Small(ql_pre, className="text-muted"),
+            ]
+        else:
+            _header_mid = []
+
         return dbc.Card(
             [
                 dbc.CardHeader(
                     dbc.Row(
                         [
-                            dbc.Col(html.H6("Query Spectrum", className="mb-0")),
+                            dbc.Col(html.H6("Query Spectrum", className="mb-0"), width="auto"),
+                            dbc.Col(_header_mid, className="d-flex align-items-center"),
                             dbc.Col(
                                 dbc.Button(
                                     "Show / Hide",
@@ -846,7 +953,7 @@ def _build_query_spectrum_card(query_usi: str):
                             ),
                         ],
                         align="center",
-                        className="g-0",
+                        className="g-0 gx-3",
                     )
                 ),
                 dbc.Collapse(
@@ -862,8 +969,38 @@ def _build_query_spectrum_card(query_usi: str):
 
     mzs = payload["mzs"]
     intensities = payload["intensities"]
-    S = payload["entropy"]
-    quality_label, _ = entropy_quality_label(S)
+
+    # Prefer the precomputed entropy (from MGF via ms_entropy) when available —
+    # it is more accurate than the USI-API path because the USI resolver may
+    # serve a differently-processed version of the spectrum, leading to a
+    # different peak set and therefore a different entropy value.
+    # Fall back to recomputing with ms_entropy on the USI peaks; as a last
+    # resort use the standalone formula stored in payload["entropy"].
+    if precomputed_entropy is not None:
+        S = float(precomputed_entropy)
+        quality_label, _ = entropy_quality_label(S)
+        entropy_source_note = "from MGF"
+    else:
+        try:
+            from bin.spectral_entropy_v2 import (
+                DEFAULT_MAX_PEAK_NUM,
+                DEFAULT_MS2_TOLERANCE_DA,
+                DEFAULT_NOISE_THRESHOLD,
+                spectral_entropy_for_spectrum,
+            )
+            raw_peaks = [[mz, i] for mz, i in zip(payload["mzs"], payload["intensities"])]
+            S = spectral_entropy_for_spectrum(
+                raw_peaks,
+                ms2_tolerance_da=DEFAULT_MS2_TOLERANCE_DA,
+                noise_threshold=DEFAULT_NOISE_THRESHOLD,
+                max_peak_num=DEFAULT_MAX_PEAK_NUM,
+            )
+            quality_label, _ = entropy_quality_label(S)
+            entropy_source_note = "from USI"
+        except Exception:
+            S = payload["entropy"]
+            quality_label, _ = entropy_quality_label(S)
+            entropy_source_note = "from USI"
 
     if "good" in quality_label or "clean" in quality_label:
         entropy_badge_color = "success"
@@ -908,7 +1045,24 @@ def _build_query_spectrum_card(query_usi: str):
             dbc.CardHeader(
                 dbc.Row(
                     [
-                        dbc.Col(html.H6("Query Spectrum", className="mb-0")),
+                        dbc.Col(html.H6("Query Spectrum", className="mb-0"), width="auto"),
+                        dbc.Col(
+                            [
+                                dbc.Badge(
+                                    f"S = {S:.3f} nats",
+                                    color=entropy_badge_color,
+                                    className="me-2",
+                                    pill=True,
+                                ),
+                                html.Small(
+                                    f"{quality_label} · "
+                                    f"{payload['n_peaks_used']} peaks ({entropy_source_note}) / "
+                                    f"precursor {payload['precursor_mz']:.4f} m/z",
+                                    className="text-muted",
+                                ),
+                            ],
+                            className="d-flex align-items-center",
+                        ),
                         dbc.Col(
                             dbc.Button(
                                 "Show / Hide",
@@ -922,46 +1076,15 @@ def _build_query_spectrum_card(query_usi: str):
                         ),
                     ],
                     align="center",
-                    className="g-0",
+                    className="g-0 gx-3",
                 )
             ),
             dbc.Collapse(
                 dbc.CardBody(
-                    [
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        dbc.Badge(
-                                            f"S = {S:.3f} nats",
-                                            color=entropy_badge_color,
-                                            className="me-2",
-                                            pill=True,
-                                        ),
-                                        html.Small(
-                                            f"{quality_label} · "
-                                            f"{payload['n_peaks_used']} peaks used / {payload['n_peaks_raw']} total",
-                                            className="text-muted",
-                                        ),
-                                    ]
-                                ),
-                                dbc.Col(
-                                    html.Small(
-                                        f"Precursor: {payload['precursor_mz']:.4f} m/z · "
-                                        f"Adduct: {payload['adduct']}",
-                                        className="text-muted",
-                                    ),
-                                    width="auto",
-                                ),
-                            ],
-                            align="center",
-                            className="mb-2",
-                        ),
-                        dcc.Graph(
-                            figure=fig,
-                            config={"displayModeBar": False, "responsive": True},
-                        ),
-                    ]
+                    dcc.Graph(
+                        figure=fig,
+                        config={"displayModeBar": False, "responsive": True},
+                    )
                 ),
                 id="spectrum-collapse",
                 is_open=False,
@@ -978,6 +1101,7 @@ def _build_detail_panel(
     use_entropy_similarity=True,
     pubchem_overrides=None,
     use_pubchem_for_score=False,
+    precomputed_query_entropy=None,
 ):
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
@@ -1384,6 +1508,6 @@ def _build_detail_panel(
     })
     masst_card = _build_masst_context_card(inchikey_first_blocks)
 
-    spectrum_card = _build_query_spectrum_card(query_usi)
+    spectrum_card = _build_query_spectrum_card(query_usi, precomputed_entropy=precomputed_query_entropy)
 
     return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data

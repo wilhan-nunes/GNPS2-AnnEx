@@ -121,6 +121,35 @@ _SUMMARY_COLUMN_DEFS = [
             "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
         },
     },
+    {
+        "headerName": "Query Entropy (S)",
+        "field": "query_entropy",
+        "maxWidth": 135,
+        "headerTooltip": "Spectral entropy of the query spectrum (nats). Higher S = more uniform peak distribution. Thresholds: <0.5 noisy, 0.5–1.0 moderate, 1.0–1.75 clean, ≥1.75 very diffuse. Only computed when entropy scoring is enabled.",
+        "tooltipField": "query_entropy_label",
+        "cellStyle": {
+            "styleConditions": [
+                {
+                    "condition": "params.value !== null && params.value < 0.5",
+                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value !== null && params.value >= 0.5 && params.value < 1.0",
+                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value !== null && params.value >= 1.0 && params.value < 1.75",
+                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                },
+                {
+                    "condition": "params.value !== null && params.value >= 1.75",
+                    "style": {"backgroundColor": "#cff4fc", "color": "#055160", "fontWeight": 600, "textAlign": "center"},
+                },
+            ],
+            "defaultStyle": {"textAlign": "center"},
+        },
+    },
+    {"field": "query_entropy_label", "hide": True, "headerName": "Query Entropy Label"},
     {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
     {
         "headerName": "Tanimoto (ECFP4)",
@@ -157,7 +186,7 @@ _SUMMARY_COLUMN_DEFS = [
 ]
 
 # Fields hidden by default (diagnostic / advanced columns).
-_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "missing_structures", "adjusted_support_score"}
+_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "missing_structures", "adjusted_support_score", "query_entropy_label"}
 
 
 def _taskinfo_key(value):
@@ -273,6 +302,12 @@ def _parse_dashboard_query(search):
     entropy_param = _get_url_param(query_dict, "entropy", "0").strip().lower()
     use_entropy_similarity = entropy_param not in {"0", "false", "off", "no"}
 
+    qe_raw = _get_url_param(query_dict, "qe", "").strip()
+    try:
+        precomputed_query_entropy = float(qe_raw) if qe_raw else None
+    except ValueError:
+        precomputed_query_entropy = None
+
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
         "workflow_choice": workflow_choice,
@@ -280,6 +315,7 @@ def _parse_dashboard_query(search):
         "use_entropy_value": ["enabled"] if use_entropy_similarity else [],
         "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
         "scan": _get_url_param(query_dict, "scan", "").strip(),
+        "precomputed_query_entropy": precomputed_query_entropy,
     }
 
 
@@ -571,6 +607,7 @@ def render_detail_panel(search):
     scan = query_state["scan"]
     workflow_choice = query_state["workflow_choice"]
     use_entropy_similarity = query_state["use_entropy_similarity"]
+    precomputed_query_entropy = query_state["precomputed_query_entropy"]
 
     if not task_id or not scan:
         return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), None
@@ -581,6 +618,7 @@ def render_detail_panel(search):
             scan,
             workflow_choice,
             use_entropy_similarity=use_entropy_similarity,
+            precomputed_query_entropy=precomputed_query_entropy,
         )
         score_panel = panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
         compounds_panel = html.Div(panel_ui.children[1:]) if getattr(panel_ui, "children", None) else html.Div()
@@ -590,6 +628,7 @@ def render_detail_panel(search):
             "scan": scan,
             "workflow_choice": workflow_choice,
             "use_entropy_similarity": use_entropy_similarity,
+            "precomputed_query_entropy": precomputed_query_entropy,
         }
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger"), html.Div(), None
@@ -614,6 +653,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
     use_entropy_similarity = bool(scan_data.get("use_entropy_similarity", False))
     use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
     if not task_id or not scan:
         return html.Div()
@@ -626,6 +666,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             use_entropy_similarity=use_entropy_similarity,
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
+            precomputed_query_entropy=precomputed_query_entropy,
         )
         return panel_ui.children[0] if getattr(panel_ui, "children", None) else panel_ui
     except Exception as exc:
@@ -795,7 +836,9 @@ def compute_and_render_scores(matches_json, params):
             f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
             f"&workflow={urllib.parse.quote(str(workflow_choice))}"
             f"&entropy={'1' if use_entropy_similarity else '0'}"
-            f"&scan={urllib.parse.quote(str(row['scan']))}&detail=1)"
+            f"&scan={urllib.parse.quote(str(row['scan']))}"
+            + (f"&qe={row['query_entropy']}" if row.get("query_entropy") is not None else "")
+            + "&detail=1)"
         ),
         axis=1,
     )

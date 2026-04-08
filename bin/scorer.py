@@ -15,6 +15,7 @@ from .normalizer import (
     _to_text,
 )
 from .tanimoto import scan_tanimoto
+from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,38 @@ def _get_entropy_similarity_from_usis(query_usi, library_usi):
         return max(0.0, min(1.0, entropy_similarity))
     except Exception:
         logger.warning("Entropy similarity failed for query=%s library=%s", query_usi, library_usi, exc_info=True)
+        return None
+
+
+@lru_cache(maxsize=4096)
+def _get_query_entropy_from_usi(query_usi: str):
+    """
+    Fallback: fetch a single query spectrum from the USI API and compute its
+    entropy S.  Used when the MGF-based loader is unavailable (no task_id,
+    download failed, scan not found in MGF).  Disk-cached via
+    spectral_entropy_v2.fetch_spectrum.
+    """
+    query_usi = _to_text(query_usi)
+    if not query_usi:
+        return None
+    try:
+        from .spectral_entropy_v2 import (
+            DEFAULT_MAX_PEAK_NUM,
+            DEFAULT_MS2_TOLERANCE_DA,
+            DEFAULT_NOISE_THRESHOLD,
+            fetch_spectrum,
+            spectral_entropy_for_spectrum,
+        )
+        spec = fetch_spectrum(query_usi, timeout=ENTROPY_USI_TIMEOUT_SEC)
+        S = spectral_entropy_for_spectrum(
+            spec.get("peaks", []),
+            ms2_tolerance_da=DEFAULT_MS2_TOLERANCE_DA,
+            noise_threshold=DEFAULT_NOISE_THRESHOLD,
+            max_peak_num=DEFAULT_MAX_PEAK_NUM,
+        )
+        return round(S, 3), _entropy_label(S)
+    except Exception:
+        logger.debug("Query entropy USI fetch failed for %s", query_usi, exc_info=True)
         return None
 
 
@@ -160,12 +193,23 @@ def _compute_scan_level_confidence(
         scan_smiles = scan_df[smiles_col].tolist() if smiles_col is not None else []
         tanimoto_score, tanimoto_source = scan_tanimoto(scan_smiles, support_fraction)
 
+        # Always build query_usi (needed for entropy similarity and USI fallback).
+        representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
+        query_usi = _build_query_usi(task_id, scan, resolved_workflow, spectrum_file=representative_spectrum_file)
+
+        # Query entropy: MGF (batch, ~3 s/task) → USI API fallback (~0.3 s/scan).
+        query_entropy = None
+        query_entropy_label = "N/A"
+        q_entropy_result = get_query_entropy_from_mgf(task_id, scan)
+        if q_entropy_result is None:
+            q_entropy_result = _get_query_entropy_from_usi(query_usi)
+        if q_entropy_result is not None:
+            query_entropy, query_entropy_label = q_entropy_result
+
         entropy_similarity = None
         entropy_source = "disabled"
         if use_entropy_similarity:
             representative_library_usi = _normalize_library_usi(representative_row.get("_library_usi"))
-            representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
-            query_usi = _build_query_usi(task_id, scan, resolved_workflow, spectrum_file=representative_spectrum_file)
             entropy_similarity = _get_entropy_similarity_from_usis(query_usi, representative_library_usi)
             entropy_source = "spectral_entropy"
         if entropy_similarity is None:
@@ -209,6 +253,8 @@ def _compute_scan_level_confidence(
                 "confidence_score": round(confidence_score, 1),
                 "confidence_label": confidence_label,
                 "badge_color": badge_color,
+                "query_entropy": round(query_entropy, 3) if query_entropy is not None else None,
+                "query_entropy_label": query_entropy_label,
             }
         )
 
