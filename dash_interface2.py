@@ -22,7 +22,7 @@ import io
 import pandas as pd
 
 from bin.loader import _load_library_matches, _load_task_information
-from bin.scorer import _compute_scan_level_confidence
+from bin.scorer import DEFAULT_SCORE_WEIGHTS, _compute_scan_level_confidence, _normalize_score_weights
 
 
 dash_app = dash.Dash(
@@ -39,6 +39,20 @@ logger = logging.getLogger(__name__)
 
 LAPLACE_ALPHA = 4.0
 LAPLACE_BETA = 5.0
+ENABLE_DEV_SCORE_WEIGHT_CONTROLS = True
+
+_SCORE_WEIGHT_INPUT_DEFS = [
+    {"key": "structure_agreement", "id": "score-weight-structure", "label": "Structure agreement"},
+    {"key": "tanimoto", "id": "score-weight-tanimoto", "label": "Tanimoto"},
+    {"key": "spectral_similarity", "id": "score-weight-spectral", "label": "Spectral similarity"},
+    {"key": "max_cosine", "id": "score-weight-max-cosine", "label": "Max cosine"},
+]
+_SCORE_WEIGHT_QUERY_PARAMS = {
+    "structure_agreement": "w_structure",
+    "tanimoto": "w_tanimoto",
+    "spectral_similarity": "w_spectral",
+    "max_cosine": "w_cosine",
+}
 
 # Column definitions for the summary AG Grid table.
 # Kept at module level so the column-visibility callback can reference them
@@ -289,6 +303,142 @@ def _get_url_param(param_dict, key, default=""):
     return param_dict.get(key, [default])[0]
 
 
+def _format_weight_percent(weight):
+    weight_percent = round(float(weight) * 100.0, 1)
+    if weight_percent.is_integer():
+        return f"{int(weight_percent)}%"
+    return f"{weight_percent:.1f}%"
+
+
+def _score_weight_inputs_from_weights(score_weights=None):
+    normalized_score_weights = _normalize_score_weights(score_weights)
+    return {
+        key: round(normalized_score_weights[key] * 100.0, 1)
+        for key in DEFAULT_SCORE_WEIGHTS
+    }
+
+
+def _parse_score_weights_from_inputs(
+    structure_value,
+    tanimoto_value,
+    spectral_value,
+    max_cosine_value,
+):
+    input_values = {
+        "structure_agreement": structure_value,
+        "tanimoto": tanimoto_value,
+        "spectral_similarity": spectral_value,
+        "max_cosine": max_cosine_value,
+    }
+    parsed_weights = {}
+    for key, default_value in DEFAULT_SCORE_WEIGHTS.items():
+        raw_value = input_values.get(key)
+        try:
+            parsed_value = float(raw_value)
+        except (TypeError, ValueError):
+            parsed_value = default_value * 100.0
+        parsed_weights[key] = max(0.0, parsed_value) / 100.0
+    return _normalize_score_weights(parsed_weights)
+
+
+def _parse_score_weights_from_query(query_dict):
+    parsed_weights = {}
+    for key, param_name in _SCORE_WEIGHT_QUERY_PARAMS.items():
+        raw_value = _get_url_param(query_dict, param_name, "").strip()
+        if not raw_value:
+            continue
+        try:
+            parsed_weights[key] = max(0.0, float(raw_value)) / 100.0
+        except ValueError:
+            continue
+    return _normalize_score_weights(parsed_weights if parsed_weights else None)
+
+
+def _score_weights_are_default(score_weights=None):
+    normalized_score_weights = _normalize_score_weights(score_weights)
+    return all(
+        abs(normalized_score_weights[key] - DEFAULT_SCORE_WEIGHTS[key]) < 1e-9
+        for key in DEFAULT_SCORE_WEIGHTS
+    )
+
+
+def _serialize_score_weights_for_query(score_weights=None):
+    normalized_score_weights = _normalize_score_weights(score_weights)
+    if _score_weights_are_default(normalized_score_weights):
+        return ""
+
+    query_parts = []
+    for key, param_name in _SCORE_WEIGHT_QUERY_PARAMS.items():
+        value_text = f"{normalized_score_weights[key] * 100.0:.3f}".rstrip("0").rstrip(".")
+        query_parts.append(f"&{param_name}={urllib.parse.quote(value_text)}")
+    return "".join(query_parts)
+
+
+def _format_score_weight_summary(score_weights=None):
+    normalized_score_weights = _normalize_score_weights(score_weights)
+    labels = {item["key"]: item["label"] for item in _SCORE_WEIGHT_INPUT_DEFS}
+    parts = [
+        f"{labels[key]} {_format_weight_percent(normalized_score_weights[key])}"
+        for key in DEFAULT_SCORE_WEIGHTS
+    ]
+    return "Score weights: " + " · ".join(parts)
+
+
+def _build_score_weight_controls():
+    input_defaults = _score_weight_inputs_from_weights()
+    control_columns = []
+    for control in _SCORE_WEIGHT_INPUT_DEFS:
+        control_columns.append(
+            dbc.Col(
+                [
+                    dbc.Label(control["label"], html_for=control["id"], className="small fw-semibold text-uppercase text-muted mb-1"),
+                    dbc.InputGroup(
+                        [
+                            dbc.Input(
+                                id=control["id"],
+                                type="number",
+                                min=0,
+                                step=0.5,
+                                value=input_defaults[control["key"]],
+                                style={"borderColor": "rgba(0,0,0,0.12)"},
+                            ),
+                            dbc.InputGroupText("%"),
+                        ],
+                        size="sm",
+                    ),
+                ],
+                md=3,
+            )
+        )
+
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Span("Score weight tuning", className="fw-semibold"),
+                            dbc.Badge("Dev only", color="warning", text_color="dark", className="ms-2"),
+                        ],
+                        className="d-flex align-items-center flex-wrap",
+                    ),
+                    html.Small(
+                        "Relative weights used for annotation scoring. Values are normalized automatically when scores are computed.",
+                        className="text-muted d-block mt-1",
+                    ),
+                ]
+            ),
+            dbc.Row(control_columns, className="g-3 mt-1"),
+        ],
+        className="mt-3 p-3 border rounded-4",
+        style={
+            "background": "rgba(248,249,250,0.9)",
+            "borderColor": "rgba(0,0,0,0.08)",
+            "display": "block" if ENABLE_DEV_SCORE_WEIGHT_CONTROLS else "none",
+        },
+    )
+
+
 def _parse_dashboard_query(search):
     try:
         query_dict = urllib.parse.parse_qs((search or "").lstrip("?"))
@@ -308,11 +458,14 @@ def _parse_dashboard_query(search):
     except ValueError:
         precomputed_query_entropy = None
 
+    score_weights = _parse_score_weights_from_query(query_dict)
+
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
         "workflow_choice": workflow_choice,
         "use_entropy_similarity": use_entropy_similarity,
         "use_entropy_value": ["enabled"] if use_entropy_similarity else [],
+        "score_weights": score_weights,
         "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
         "scan": _get_url_param(query_dict, "scan", "").strip(),
         "precomputed_query_entropy": precomputed_query_entropy,
@@ -384,6 +537,9 @@ CONTROLS_CARD = dbc.Card(
                 className="g-3",
             ),
             html.Div(
+                _build_score_weight_controls(),
+            ),
+            html.Div(
                 [
                     dbc.Button(
                         "Load annotations",
@@ -420,7 +576,7 @@ INFO_MODAL = dbc.Modal(
                     "The evidence score (0–100) is computed per scan from four weighted signals.",
                     className="text-muted",
                 ),
-                html.H6("Score weights", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                html.H6("Default score weights", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
                 dbc.ListGroup(
                     [
                         dbc.ListGroupItem([html.Strong("50% "), "Structure agreement — supporting hits / total hits (same planar structure or positional-isomer family)"]),
@@ -431,6 +587,13 @@ INFO_MODAL = dbc.Modal(
                     flush=True,
                     className="mb-3",
                 ),
+                dbc.Alert(
+                    "Dev note: the local dashboard can override these defaults with the score-weight tuning controls.",
+                    color="warning",
+                    className="mb-2 py-2 small",
+                )
+                if ENABLE_DEV_SCORE_WEIGHT_CONTROLS
+                else None,
                 dbc.Alert(
                     "Stereochemistry is ignored — planar InChIKey connectivity (or fallbacks) is used for structure grouping.",
                     color="info",
@@ -569,15 +732,28 @@ dash_app.layout = html.Div([NAVBAR, BODY])
 
 
 @dash_app.callback(
-    [Output("task-id", "value"), Output("workflow-choice", "value"), Output("use-entropy", "value")],
+    [
+        Output("task-id", "value"),
+        Output("workflow-choice", "value"),
+        Output("use-entropy", "value"),
+        Output("score-weight-structure", "value"),
+        Output("score-weight-tanimoto", "value"),
+        Output("score-weight-spectral", "value"),
+        Output("score-weight-max-cosine", "value"),
+    ],
     [Input("url", "search")],
 )
 def determine_task_from_url(search):
     query_state = _parse_dashboard_query(search)
+    score_weight_inputs = _score_weight_inputs_from_weights(query_state["score_weights"])
     return (
         query_state["task_id"],
         query_state["workflow_choice"],
         query_state["use_entropy_value"],
+        score_weight_inputs["structure_agreement"],
+        score_weight_inputs["tanimoto"],
+        score_weight_inputs["spectral_similarity"],
+        score_weight_inputs["max_cosine"],
     )
 
 
@@ -611,6 +787,7 @@ def render_detail_panel(search):
     workflow_choice = query_state["workflow_choice"]
     use_entropy_similarity = query_state["use_entropy_similarity"]
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
+    score_weights = query_state["score_weights"]
 
     if not task_id or not scan:
         return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), html.Div(), None
@@ -621,6 +798,7 @@ def render_detail_panel(search):
             scan,
             workflow_choice,
             use_entropy_similarity=use_entropy_similarity,
+            score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
@@ -633,6 +811,7 @@ def render_detail_panel(search):
             "scan": scan,
             "workflow_choice": workflow_choice,
             "use_entropy_similarity": use_entropy_similarity,
+            "score_weights": score_weights,
             "precomputed_query_entropy": precomputed_query_entropy,
         }
     except Exception as exc:
@@ -660,6 +839,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
     workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
     use_entropy_similarity = bool(scan_data.get("use_entropy_similarity", False))
+    score_weights = _normalize_score_weights(scan_data.get("score_weights"))
     use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
@@ -672,6 +852,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             scan,
             workflow_choice,
             use_entropy_similarity=use_entropy_similarity,
+            score_weights=score_weights,
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
             precomputed_query_entropy=precomputed_query_entropy,
@@ -701,9 +882,27 @@ def reset_pubchem_overrides_on_page_change(search):
         Output("load-status", "children"),
     ],
     [Input("run-analysis", "n_clicks"), Input("url", "search")],
-    [State("task-id", "value"), State("workflow-choice", "value"), State("use-entropy", "value")],
+    [
+        State("task-id", "value"),
+        State("workflow-choice", "value"),
+        State("use-entropy", "value"),
+        State("score-weight-structure", "value"),
+        State("score-weight-tanimoto", "value"),
+        State("score-weight-spectral", "value"),
+        State("score-weight-max-cosine", "value"),
+    ],
 )
-def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, use_entropy_value):
+def load_library_matches_callback(
+    _n_clicks,
+    search,
+    task_id,
+    workflow_choice,
+    use_entropy_value,
+    structure_weight_value,
+    tanimoto_weight_value,
+    spectral_weight_value,
+    max_cosine_weight_value,
+):
     """Stage 1 — fetch library matches and report what was found."""
     query_state = _parse_dashboard_query(search)
     should_autorun = bool(query_state["task_id"]) and not query_state["detail_mode"] and (_n_clicks or 0) < 1
@@ -712,10 +911,17 @@ def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, u
         task_id = query_state["task_id"]
         workflow_choice = query_state["workflow_choice"]
         use_entropy_similarity = query_state["use_entropy_similarity"]
+        score_weights = query_state["score_weights"]
     else:
         task_id = (task_id or "").strip()
         workflow_choice = (workflow_choice or "auto").strip().lower()
         use_entropy_similarity = isinstance(use_entropy_value, list) and ("enabled" in use_entropy_value)
+        score_weights = _parse_score_weights_from_inputs(
+            structure_weight_value,
+            tanimoto_weight_value,
+            spectral_weight_value,
+            max_cosine_weight_value,
+        )
 
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
@@ -791,6 +997,7 @@ def load_library_matches_callback(_n_clicks, search, task_id, workflow_choice, u
         "workflow_choice": workflow_choice,
         "resolved_workflow": resolved_workflow,
         "use_entropy_similarity": use_entropy_similarity,
+        "score_weights": score_weights,
         "task_info": task_info,
     }
 
@@ -811,7 +1018,10 @@ def compute_and_render_scores(matches_json, params):
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
     use_entropy_similarity = params["use_entropy_similarity"]
+    score_weights = _normalize_score_weights(params.get("score_weights"))
     task_info = params.get("task_info") or {}
+    custom_score_weights_active = not _score_weights_are_default(score_weights)
+    score_weight_query_suffix = _serialize_score_weights_for_query(score_weights)
 
     try:
         matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
@@ -820,6 +1030,7 @@ def compute_and_render_scores(matches_json, params):
             task_id=task_id,
             workflow_choice=resolved_workflow,
             use_entropy_similarity=use_entropy_similarity,
+            score_weights=score_weights,
         )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
@@ -847,6 +1058,7 @@ def compute_and_render_scores(matches_json, params):
             f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
             f"&workflow={urllib.parse.quote(str(workflow_choice))}"
             f"&entropy={'1' if use_entropy_similarity else '0'}"
+            f"{score_weight_query_suffix}"
             f"&scan={urllib.parse.quote(str(row['scan']))}"
             + (f"&qe={row['query_entropy']}" if row.get("query_entropy") is not None else "")
             + "&detail=1)"
@@ -908,7 +1120,19 @@ def compute_and_render_scores(matches_json, params):
                                     f" · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}",
                                 ]
                             ),
+                            html.Small(
+                                _format_score_weight_summary(score_weights),
+                                className="text-muted d-block mb-2",
+                            ),
                             task_metadata_details,
+                            dbc.Badge(
+                                "Custom score weights active",
+                                color="warning",
+                                text_color="dark",
+                                className="me-2",
+                            )
+                            if custom_score_weights_active
+                            else None,
                             dbc.Badge(
                                 f"Consistent evidence: {badge_counts['Consistent evidence']}",
                                 color="success",
@@ -1010,6 +1234,7 @@ def download_summary_csv(n_clicks, matches_json, params):
     task_id = params.get("task_id", "unknown")
     resolved_workflow = params.get("resolved_workflow", "auto")
     use_entropy_similarity = params.get("use_entropy_similarity", False)
+    score_weights = _normalize_score_weights(params.get("score_weights"))
 
     try:
         matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
@@ -1018,6 +1243,7 @@ def download_summary_csv(n_clicks, matches_json, params):
             task_id=task_id,
             workflow_choice=resolved_workflow,
             use_entropy_similarity=use_entropy_similarity,
+            score_weights=score_weights,
         )
     except Exception:
         return no_update
@@ -1028,6 +1254,8 @@ def download_summary_csv(n_clicks, matches_json, params):
         / (export_df["total_matches"].astype(float) + LAPLACE_BETA)
     ).round(3)
     export_df["task_id"] = task_id
+    for key, value in score_weights.items():
+        export_df[f"weight_{key}"] = round(float(value), 6)
 
     filename = f"annex_summary_{task_id[:12]}.csv"
     return dcc.send_data_frame(export_df.to_csv, filename, index=False)

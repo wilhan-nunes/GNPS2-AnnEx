@@ -26,7 +26,12 @@ from bin.normalizer import (
     _to_text,
     _truncate_text,
 )
-from bin.scorer import _compute_scan_level_confidence, _confidence_category
+from bin.scorer import (
+    _compute_confidence_score,
+    _compute_scan_level_confidence,
+    _confidence_category,
+    _normalize_score_weights,
+)
 from bin.tanimoto import _smiles_to_morgan_fp, scan_tanimoto
 
 logger = logging.getLogger(__name__)
@@ -261,6 +266,13 @@ def _format_tanimoto_source_label(tanimoto_source):
     return source_label_map.get(_to_text(tanimoto_source), "Tanimoto structural similarity")
 
 
+def _format_weight_percent(weight):
+    weight_percent = round(float(weight) * 100.0, 1)
+    if weight_percent.is_integer():
+        return f"{int(weight_percent)}%"
+    return f"{weight_percent:.1f}%"
+
+
 def _metric_bar_color(value):
     if value >= 0.75:
         return "#1d9a6c"
@@ -347,10 +359,12 @@ def _build_reliability_breakdown_panel(
     resolved_workflow,
     score_row,
     use_entropy_similarity,
+    score_weights=None,
 ):
     confidence_score = float(score_row["confidence_score"])
     confidence_label = _to_text(score_row["confidence_label"])
     palette = _confidence_palette(confidence_label)
+    normalized_score_weights = _normalize_score_weights(score_weights)
     supporting_matches = int(score_row["supporting_matches"])
     total_matches = int(score_row["total_matches"])
     support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
@@ -365,9 +379,9 @@ def _build_reliability_breakdown_panel(
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
 
     similarity_formula = (
-        "entropy similarity × 25%"
+        f"entropy similarity × {_format_weight_percent(normalized_score_weights['spectral_similarity'])}"
         if entropy_source == "spectral_entropy"
-        else "mean cosine fallback × 25%"
+        else f"mean cosine fallback × {_format_weight_percent(normalized_score_weights['spectral_similarity'])}"
     )
     similarity_secondary = (
         f"Mean cosine: {mean_cosine:.4f}"
@@ -393,16 +407,22 @@ def _build_reliability_breakdown_panel(
     metrics = [
         {
             "label": "Structure agreement",
-            "formula": "same planar structure or positional-isomer family / total hits × 50%",
-            "weight": 0.50,
+            "formula": (
+                "same planar structure or positional-isomer family / total hits × "
+                f"{_format_weight_percent(normalized_score_weights['structure_agreement'])}"
+            ),
+            "weight": normalized_score_weights["structure_agreement"],
             "value": support_fraction,
             "raw_primary": f"{supporting_matches} / {total_matches} hits support the same planar structure or positional-isomer family",
             "raw_secondary": _truncate_text(structure_key, max_length=48),
         },
         {
             "label": "Tanimoto structural similarity",
-            "formula": f"mean pairwise ECFP4 Tanimoto × 15% · source: {tanimoto_label}",
-            "weight": 0.15,
+            "formula": (
+                "mean pairwise ECFP4 Tanimoto × "
+                f"{_format_weight_percent(normalized_score_weights['tanimoto'])} · source: {tanimoto_label}"
+            ),
+            "weight": normalized_score_weights["tanimoto"],
             "value": tanimoto_score,
             "raw_primary": f"{tanimoto_score:.4f} · {tanimoto_label}",
             "raw_secondary": tanimoto_secondary,
@@ -410,15 +430,15 @@ def _build_reliability_breakdown_panel(
         {
             "label": "Spectral similarity",
             "formula": similarity_formula,
-            "weight": 0.25,
+            "weight": normalized_score_weights["spectral_similarity"],
             "value": similarity_value,
             "raw_primary": f"{similarity_value:.4f} from {_format_entropy_source_label(entropy_source).lower()}",
             "raw_secondary": similarity_secondary,
         },
         {
             "label": "Best cosine score",
-            "formula": "max cosine × 10%",
-            "weight": 0.10,
+            "formula": f"max cosine × {_format_weight_percent(normalized_score_weights['max_cosine'])}",
+            "weight": normalized_score_weights["max_cosine"],
             "value": max_cosine,
             "raw_primary": f"{max_cosine:.4f} strongest library hit",
             "raw_secondary": f"Mean cosine across supporting hits: {mean_cosine:.4f}",
@@ -449,7 +469,7 @@ def _build_reliability_breakdown_panel(
                         ],
                         className="td-component",
                     ),
-                    html.Td(f"{int(metric['weight'] * 100)}%", className="td-weight"),
+                    html.Td(_format_weight_percent(metric["weight"]), className="td-weight"),
                     html.Td(
                         html.Div(
                             [
@@ -1107,10 +1127,12 @@ def _build_detail_panel(
     scan,
     workflow_choice,
     use_entropy_similarity=True,
+    score_weights=None,
     pubchem_overrides=None,
     use_pubchem_for_score=False,
     precomputed_query_entropy=None,
 ):
+    normalized_score_weights = _normalize_score_weights(score_weights)
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
     summary_df = _compute_scan_level_confidence(
@@ -1119,6 +1141,7 @@ def _build_detail_panel(
         workflow_choice=resolved_workflow,
         scan_filter=scan,
         use_entropy_similarity=use_entropy_similarity,
+        score_weights=normalized_score_weights,
     )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
@@ -1458,13 +1481,13 @@ def _build_detail_panel(
 
             entropy_similarity = float(score_row_for_panel["entropy_similarity"])
             max_cosine = float(score_row_for_panel["max_cosine"])
-            confidence_score = 100.0 * (
-                0.50 * support_fraction
-                + 0.15 * float(tanimoto_score)
-                + 0.25 * entropy_similarity
-                + 0.10 * max_cosine
+            confidence_score = _compute_confidence_score(
+                support_fraction,
+                float(tanimoto_score),
+                entropy_similarity,
+                max_cosine,
+                score_weights=normalized_score_weights,
             )
-            confidence_score = min(100.0, max(0.0, confidence_score))
             confidence_label, badge_color = _confidence_category(confidence_score)
 
             score_row_for_panel["tanimoto_score"] = round(float(tanimoto_score), 4)
@@ -1480,6 +1503,7 @@ def _build_detail_panel(
         resolved_workflow,
         score_row_for_panel,
         use_entropy_similarity,
+        score_weights=normalized_score_weights,
     )
 
     compounds_card = dbc.Card(

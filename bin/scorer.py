@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+import math
 from functools import lru_cache
 
 import pandas as pd
@@ -19,6 +20,13 @@ from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SCORE_WEIGHTS = {
+    "structure_agreement": 0.50,
+    "tanimoto": 0.15,
+    "spectral_similarity": 0.25,
+    "max_cosine": 0.10,
+}
+
 
 def _confidence_category(score):
     if score >= 80:
@@ -26,6 +34,48 @@ def _confidence_category(score):
     if score >= 55:
         return "Inconclusive", "warning"
     return "Inconsistent evidence", "danger"
+
+
+def _normalize_score_weights(score_weights=None):
+    normalized_weights = {}
+    if not isinstance(score_weights, dict):
+        return DEFAULT_SCORE_WEIGHTS.copy()
+
+    for key, default_value in DEFAULT_SCORE_WEIGHTS.items():
+        raw_value = score_weights.get(key, default_value)
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = default_value
+        if not math.isfinite(value) or value < 0:
+            value = default_value
+        normalized_weights[key] = value
+
+    total_weight = sum(normalized_weights.values())
+    if total_weight <= 0:
+        return DEFAULT_SCORE_WEIGHTS.copy()
+
+    return {
+        key: value / total_weight
+        for key, value in normalized_weights.items()
+    }
+
+
+def _compute_confidence_score(
+    support_fraction,
+    tanimoto_score,
+    spectral_similarity,
+    max_cosine,
+    score_weights=None,
+):
+    normalized_score_weights = _normalize_score_weights(score_weights)
+    confidence_score = 100.0 * (
+        normalized_score_weights["structure_agreement"] * float(support_fraction)
+        + normalized_score_weights["tanimoto"] * float(tanimoto_score)
+        + normalized_score_weights["spectral_similarity"] * float(spectral_similarity)
+        + normalized_score_weights["max_cosine"] * float(max_cosine)
+    )
+    return min(100.0, max(0.0, confidence_score))
 
 
 
@@ -106,6 +156,7 @@ def _compute_scan_level_confidence(
     workflow_choice="auto",
     scan_filter=None,
     use_entropy_similarity=True,
+    score_weights=None,
 ):
     scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
@@ -145,6 +196,7 @@ def _compute_scan_level_confidence(
         else ""
     )
     resolved_workflow = _infer_resolved_workflow(work_df, workflow_choice)
+    normalized_score_weights = _normalize_score_weights(score_weights)
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -217,15 +269,13 @@ def _compute_scan_level_confidence(
             if use_entropy_similarity:
                 entropy_source = "mean_cosine_fallback"
 
-        # Weights: structure_agreement 50%, tanimoto 15%, spectral_similarity 25%,
-        #          max_cosine 10%.
-        confidence_score = 100.0 * (
-            0.50 * support_fraction
-            + 0.15 * tanimoto_score
-            + 0.25 * entropy_similarity
-            + 0.10 * max_cosine
+        confidence_score = _compute_confidence_score(
+            support_fraction,
+            tanimoto_score,
+            entropy_similarity,
+            max_cosine,
+            score_weights=normalized_score_weights,
         )
-        confidence_score = min(100.0, max(0.0, confidence_score))
         confidence_label, badge_color = _confidence_category(confidence_score)
 
         precursor_mz = None
