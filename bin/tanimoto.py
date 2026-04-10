@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 MIN_SMILES_FOR_PAIRWISE = 2
 
 
+def _canonical_smiles(smiles: str):
+    """Return RDKit canonical SMILES, or None if the molecule cannot be parsed."""
+    try:
+        from rdkit import Chem
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return Chem.MolToSmiles(mol)
+    except Exception:
+        return None
+
+
 def _smiles_to_morgan_fp(smiles: str):
     """Return an ECFP4 Morgan fingerprint (2048-bit) for *smiles*, or None."""
     try:
@@ -113,9 +125,13 @@ def scan_tanimoto(smiles_iterable, support_fraction: float) -> tuple:
     unique_smiles: list = []
     for raw in smiles_iterable:
         smi = str(raw).strip() if raw is not None else ""
-        if smi and smi.lower() not in {"nan", "none"} and smi not in seen:
-            seen.add(smi)
-            unique_smiles.append(smi)
+        if not smi or smi.lower() in {"nan", "none"}:
+            continue
+        canonical = _canonical_smiles(smi)
+        key = canonical if canonical is not None else smi
+        if key not in seen:
+            seen.add(key)
+            unique_smiles.append(key)
 
     if len(unique_smiles) == 0:
         # No valid SMILES available at all — fall back to count-based agreement.

@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .constants import ENTROPY_USI_TIMEOUT_SEC
+from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, PPM_SCALE, MZ_PRECISION_FLOOR
 from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
@@ -20,11 +20,15 @@ from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
 
 logger = logging.getLogger(__name__)
 
+# Weights are pre-normalised (sum = 1.0).
+# Nominal intent: structure 50 : tanimoto 15 : spectral 25 : cosine 10 : shared_peaks 10
+# Divided by 110 to keep the sum exactly 1.
 DEFAULT_SCORE_WEIGHTS = {
-    "structure_agreement": 0.50,
-    "tanimoto": 0.15,
-    "spectral_similarity": 0.25,
-    "max_cosine": 0.10,
+    "structure_agreement": 50 / 110,
+    "tanimoto": 15 / 110,
+    "spectral_similarity": 25 / 110,
+    "max_cosine": 10 / 110,
+    "shared_peaks": 10 / 110,
 }
 
 
@@ -66,6 +70,7 @@ def _compute_confidence_score(
     tanimoto_score,
     spectral_similarity,
     max_cosine,
+    shared_peaks_score=0.0,
     score_weights=None,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
@@ -74,6 +79,7 @@ def _compute_confidence_score(
         + normalized_score_weights["tanimoto"] * float(tanimoto_score)
         + normalized_score_weights["spectral_similarity"] * float(spectral_similarity)
         + normalized_score_weights["max_cosine"] * float(max_cosine)
+        + normalized_score_weights.get("shared_peaks", 0.0) * float(shared_peaks_score)
     )
     return min(100.0, max(0.0, confidence_score))
 
@@ -157,6 +163,8 @@ def _compute_scan_level_confidence(
     scan_filter=None,
     use_entropy_similarity=True,
     score_weights=None,
+    ppm_scale=None,
+    mz_precision_floor=None,
 ):
     scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
@@ -166,6 +174,8 @@ def _compute_scan_level_confidence(
     smiles_col = _find_first_column(df, ["Smiles", "SMILES", "smiles"])
     inchikey_col = _find_first_column(df, ["InChIKey", "inchikey", "INCHIKEY"])
     precursor_mz_col = _find_first_column(df, ["SpecMZ", "Precursor_MZ", "precursor_mz"])
+    shared_peaks_col = _find_first_column(df, ["SharedPeaks", "shared_peaks"])
+    mz_error_col = _find_first_column(df, ["MZErrorPPM", "mz_error_ppm"])
 
     if scan_col is None:
         raise ValueError("Could not find scan column (#Scan# / scan / Scan) in library results.")
@@ -178,6 +188,14 @@ def _compute_scan_level_confidence(
         work_df = work_df[work_df[scan_col] == str(scan_filter)].copy()
 
     work_df["_cosine"] = pd.to_numeric(work_df[cosine_col], errors="coerce").fillna(0.0)
+    work_df["_shared_peaks"] = (
+        pd.to_numeric(work_df[shared_peaks_col], errors="coerce").fillna(0.0)
+        if shared_peaks_col is not None else 0.0
+    )
+    work_df["_abs_ppm"] = (
+        pd.to_numeric(work_df[mz_error_col], errors="coerce").abs()
+        if mz_error_col is not None else float("nan")
+    )
     work_df["_structure_key"] = work_df.apply(_canonical_structure_key, axis=1)
     work_df = _annotate_support_groups(work_df)
     work_df["_compound"] = (
@@ -197,6 +215,19 @@ def _compute_scan_level_confidence(
     )
     resolved_workflow = _infer_resolved_workflow(work_df, workflow_choice)
     normalized_score_weights = _normalize_score_weights(score_weights)
+
+    try:
+        _ppm_scale = float(ppm_scale) if ppm_scale is not None else PPM_SCALE
+        if not (math.isfinite(_ppm_scale) and _ppm_scale > 0):
+            _ppm_scale = PPM_SCALE
+    except (TypeError, ValueError):
+        _ppm_scale = PPM_SCALE
+    try:
+        _mz_precision_floor = float(mz_precision_floor) if mz_precision_floor is not None else MZ_PRECISION_FLOOR
+        if not (math.isfinite(_mz_precision_floor) and 0.0 <= _mz_precision_floor <= 1.0):
+            _mz_precision_floor = MZ_PRECISION_FLOOR
+    except (TypeError, ValueError):
+        _mz_precision_floor = MZ_PRECISION_FLOOR
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -224,6 +255,8 @@ def _compute_scan_level_confidence(
                 count=("_support_group_key", "size"),
                 mean_cosine=("_cosine", "mean"),
                 max_cosine=("_cosine", "max"),
+                mean_shared_peaks=("_shared_peaks", "mean"),
+                mean_abs_ppm=("_abs_ppm", "mean"),
             )
             .sort_values(["count", "mean_cosine", "max_cosine"], ascending=False)
         )
@@ -239,6 +272,17 @@ def _compute_scan_level_confidence(
         support_fraction = best["count"] / total_matches if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
+
+        # SharedPeaks: soft normalisation x/(x+K) → [0, 1]
+        raw_shared_peaks = float(best["mean_shared_peaks"]) if not math.isnan(float(best["mean_shared_peaks"])) else 0.0
+        shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
+
+        # MZErrorPPM: multiplicative precision factor, floored to avoid over-penalising low-res instruments
+        raw_abs_ppm = float(best["mean_abs_ppm"])
+        if math.isnan(raw_abs_ppm) or mz_error_col is None:
+            mz_precision = 1.0  # no data → no penalty
+        else:
+            mz_precision = max(_mz_precision_floor, math.exp(-raw_abs_ppm / _ppm_scale))
 
         # Tanimoto structural similarity (ECFP4, mean pairwise across unique library SMILES).
         # PubChem lookups are handled only on user request in detail view.
@@ -274,8 +318,10 @@ def _compute_scan_level_confidence(
             tanimoto_score,
             entropy_similarity,
             max_cosine,
+            shared_peaks_score=shared_peaks_score,
             score_weights=normalized_score_weights,
         )
+        confidence_score = min(100.0, max(0.0, confidence_score * mz_precision))
         confidence_label, badge_color = _confidence_category(confidence_score)
 
         precursor_mz = None
@@ -300,6 +346,9 @@ def _compute_scan_level_confidence(
                 "entropy_source": entropy_source,
                 "tanimoto_score": round(float(tanimoto_score), 4),
                 "tanimoto_source": tanimoto_source,
+                "shared_peaks": round(raw_shared_peaks, 2),
+                "mean_abs_ppm_error": round(raw_abs_ppm, 3) if not math.isnan(raw_abs_ppm) else None,
+                "mz_precision": round(mz_precision, 4),
                 "confidence_score": round(confidence_score, 1),
                 "confidence_label": confidence_label,
                 "badge_color": badge_color,

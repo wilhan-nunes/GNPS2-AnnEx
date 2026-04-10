@@ -1131,6 +1131,8 @@ def _build_detail_panel(
     pubchem_overrides=None,
     use_pubchem_for_score=False,
     precomputed_query_entropy=None,
+    ppm_scale=None,
+    mz_precision_floor=None,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
     matches_df = _load_library_matches(task_id, workflow_choice)
@@ -1142,6 +1144,8 @@ def _build_detail_panel(
         scan_filter=scan,
         use_entropy_similarity=use_entropy_similarity,
         score_weights=normalized_score_weights,
+        ppm_scale=ppm_scale,
+        mz_precision_floor=mz_precision_floor,
     )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
@@ -1162,6 +1166,7 @@ def _build_detail_panel(
     library_usi_col = _find_first_column(scan_df, ["library_usi", "LibraryUSI", "library usi"])
     library_name_col = _find_first_column(scan_df, ["LibraryName", "library_name", "Library Name"])
     adduct_col = _find_first_column(scan_df, ["Adduct", "adduct", "Precursor_type", "Precursor Type"])
+    mz_error_col = _find_first_column(scan_df, ["MZErrorPPM", "mz_error_ppm"])
     spectrum_file_col = _find_first_column(scan_df, ["SpectrumFile"])
     smiles_col = _find_first_column(scan_df, ["Smiles", "SMILES", "smiles"])
     inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
@@ -1177,6 +1182,7 @@ def _build_detail_panel(
     scan_df["_library_usi"] = scan_df[library_usi_col].astype(str) if library_usi_col else ""
     scan_df["_library_name"] = scan_df[library_name_col].astype(str) if library_name_col else ""
     scan_df["_adduct"] = scan_df[adduct_col].astype(str) if adduct_col else ""
+    scan_df["_mz_error_ppm"] = pd.to_numeric(scan_df[mz_error_col], errors="coerce") if mz_error_col is not None else float("nan")
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
@@ -1229,9 +1235,14 @@ def _build_detail_panel(
                 continue
 
             adduct = _to_text(row.get("_adduct"))
+            mz_error_ppm = row.get("_mz_error_ppm")
             existing_match = match_lookup.get(normalized_library_usi)
             if existing_match is None:
-                existing_match = {"library_usi": normalized_library_usi, "adduct": adduct}
+                existing_match = {
+                    "library_usi": normalized_library_usi,
+                    "adduct": adduct,
+                    "mz_error_ppm": mz_error_ppm,
+                }
                 match_lookup[normalized_library_usi] = existing_match
                 ordered_matches.append(existing_match)
                 continue
@@ -1278,6 +1289,11 @@ def _build_detail_panel(
         mirror_links = []
         for link_idx, library_match in enumerate(library_matches):
             adduct_label = library_match["adduct"] or "Adduct unavailable"
+            mz_error_ppm = library_match.get("mz_error_ppm")
+            try:
+                ppm_label = f"{float(mz_error_ppm):.2f} ppm" if mz_error_ppm is not None and not (mz_error_ppm != mz_error_ppm) else None
+            except (TypeError, ValueError):
+                ppm_label = None
             mirror_links.append(
                 html.Div(
                     [
@@ -1287,6 +1303,7 @@ def _build_detail_panel(
                             href=_build_mirror_plot_link(query_usi, library_match["library_usi"]),
                             target="_blank",
                         ),
+                        html.Span(f" ({ppm_label})", className="text-muted small ms-1") if ppm_label else None,
                     ],
                     className="mb-1",
                 )

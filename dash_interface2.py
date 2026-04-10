@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+import math
 import urllib.parse
 
 import dash
@@ -16,13 +17,13 @@ from components import (
     _search_pubchem_candidates,
 )
 from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
-from bin.constants import SUPPORTED_WORKFLOWS
+from bin.constants import SUPPORTED_WORKFLOWS, PPM_SCALE, MZ_PRECISION_FLOOR
 import io
 
 import pandas as pd
 
-from bin.loader import _load_library_matches, _load_task_information
-from bin.scorer import DEFAULT_SCORE_WEIGHTS, _compute_scan_level_confidence, _normalize_score_weights
+from bin.loader import _load_library_matches, _load_task_information, _compute_scores_cached
+from bin.scorer import DEFAULT_SCORE_WEIGHTS, _normalize_score_weights
 
 
 dash_app = dash.Dash(
@@ -46,12 +47,14 @@ _SCORE_WEIGHT_INPUT_DEFS = [
     {"key": "tanimoto", "id": "score-weight-tanimoto", "label": "Tanimoto"},
     {"key": "spectral_similarity", "id": "score-weight-spectral", "label": "Spectral similarity"},
     {"key": "max_cosine", "id": "score-weight-max-cosine", "label": "Max cosine"},
+    {"key": "shared_peaks", "id": "score-weight-shared-peaks", "label": "Shared peaks"},
 ]
 _SCORE_WEIGHT_QUERY_PARAMS = {
     "structure_agreement": "w_structure",
     "tanimoto": "w_tanimoto",
     "spectral_similarity": "w_spectral",
     "max_cosine": "w_cosine",
+    "shared_peaks": "w_shared",
 }
 
 # Column definitions for the summary AG Grid table.
@@ -66,6 +69,7 @@ _SUMMARY_COLUMN_DEFS = [
         "cellRenderer": "markdown",
         "linkTarget": "_blank",
         "minWidth": 180,
+        "headerTooltip": "🔁 indicates the same structure key is proposed for multiple scans.",
     },
     {
         "headerName": "Support (planar structure or isomer family / total)",
@@ -197,10 +201,31 @@ _SUMMARY_COLUMN_DEFS = [
         "maxWidth": 145,
         "cellStyle": {"textAlign": "center"},
     },
+    {
+        "headerName": "Shared Peaks (mean)",
+        "field": "shared_peaks",
+        "maxWidth": 130,
+        "headerTooltip": "Mean number of peaks shared between the query spectrum and library hits in the top support group. Higher values increase confidence.",
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Mean |MZError| (ppm)",
+        "field": "mean_abs_ppm_error",
+        "maxWidth": 145,
+        "headerTooltip": "Mean absolute precursor m/z error (ppm) across hits in the top support group. Lower values indicate better mass accuracy.",
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "MZ Precision Factor",
+        "field": "mz_precision",
+        "maxWidth": 145,
+        "headerTooltip": "Multiplicative factor applied to the base score based on MZErrorPPM. exp(-|ppm| / 10), floored at 0.5. 1.0 = no penalty.",
+        "cellStyle": {"textAlign": "center"},
+    },
 ]
 
 # Fields hidden by default (diagnostic / advanced columns).
-_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity"}
+_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity", "mean_abs_ppm_error", "mz_precision"}
 
 
 def _taskinfo_key(value):
@@ -323,12 +348,14 @@ def _parse_score_weights_from_inputs(
     tanimoto_value,
     spectral_value,
     max_cosine_value,
+    shared_peaks_value=None,
 ):
     input_values = {
         "structure_agreement": structure_value,
         "tanimoto": tanimoto_value,
         "spectral_similarity": spectral_value,
         "max_cosine": max_cosine_value,
+        "shared_peaks": shared_peaks_value,
     }
     parsed_weights = {}
     for key, default_value in DEFAULT_SCORE_WEIGHTS.items():
@@ -374,6 +401,54 @@ def _serialize_score_weights_for_query(score_weights=None):
     return "".join(query_parts)
 
 
+def _parse_ppm_from_query(query_dict):
+    ppm_scale_raw = _get_url_param(query_dict, "ppm_scale", "").strip()
+    ppm_floor_raw = _get_url_param(query_dict, "ppm_floor", "").strip()
+    try:
+        ppm_scale = float(ppm_scale_raw) if ppm_scale_raw else PPM_SCALE
+        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
+            ppm_scale = PPM_SCALE
+    except (ValueError, TypeError):
+        ppm_scale = PPM_SCALE
+    try:
+        ppm_floor = float(ppm_floor_raw) if ppm_floor_raw else MZ_PRECISION_FLOOR
+        if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
+            ppm_floor = MZ_PRECISION_FLOOR
+    except (ValueError, TypeError):
+        ppm_floor = MZ_PRECISION_FLOOR
+    return ppm_scale, ppm_floor
+
+
+def _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value):
+    try:
+        ppm_scale = float(ppm_scale_value) if ppm_scale_value is not None else PPM_SCALE
+        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
+            ppm_scale = PPM_SCALE
+    except (ValueError, TypeError):
+        ppm_scale = PPM_SCALE
+    try:
+        ppm_floor = float(ppm_floor_value) if ppm_floor_value is not None else MZ_PRECISION_FLOOR
+        if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
+            ppm_floor = MZ_PRECISION_FLOOR
+    except (ValueError, TypeError):
+        ppm_floor = MZ_PRECISION_FLOOR
+    return ppm_scale, ppm_floor
+
+
+def _ppm_params_are_default(ppm_scale, ppm_floor):
+    return abs(float(ppm_scale) - PPM_SCALE) < 1e-6 and abs(float(ppm_floor) - MZ_PRECISION_FLOOR) < 1e-6
+
+
+def _serialize_ppm_for_query(ppm_scale, ppm_floor):
+    suffix = ""
+    if not _ppm_params_are_default(ppm_scale, ppm_floor):
+        if abs(float(ppm_scale) - PPM_SCALE) >= 1e-6:
+            suffix += f"&ppm_scale={float(ppm_scale):.6g}"
+        if abs(float(ppm_floor) - MZ_PRECISION_FLOOR) >= 1e-6:
+            suffix += f"&ppm_floor={float(ppm_floor):.6g}"
+    return suffix
+
+
 def _format_score_weight_summary(score_weights=None):
     normalized_score_weights = _normalize_score_weights(score_weights)
     labels = {item["key"]: item["label"] for item in _SCORE_WEIGHT_INPUT_DEFS}
@@ -411,6 +486,52 @@ def _build_score_weight_controls():
             )
         )
 
+    ppm_row = dbc.Row(
+        [
+            dbc.Col(
+                [
+                    dbc.Label(
+                        "PPM penalty scale",
+                        html_for="ppm-scale",
+                        className="small fw-semibold text-uppercase text-muted mb-1",
+                    ),
+                    dbc.Input(
+                        id="ppm-scale",
+                        type="number",
+                        min=1,
+                        max=200,
+                        step=0.5,
+                        value=PPM_SCALE,
+                        style={"borderColor": "rgba(0,0,0,0.12)"},
+                        size="sm",
+                    ),
+                ],
+                md=3,
+            ),
+            dbc.Col(
+                [
+                    dbc.Label(
+                        "PPM penalty floor",
+                        html_for="ppm-floor",
+                        className="small fw-semibold text-uppercase text-muted mb-1",
+                    ),
+                    dbc.Input(
+                        id="ppm-floor",
+                        type="number",
+                        min=0,
+                        max=1,
+                        step=0.05,
+                        value=MZ_PRECISION_FLOOR,
+                        style={"borderColor": "rgba(0,0,0,0.12)"},
+                        size="sm",
+                    ),
+                ],
+                md=3,
+            ),
+        ],
+        className="g-3 mt-2",
+    )
+
     return html.Div(
         [
             html.Div(
@@ -429,6 +550,9 @@ def _build_score_weight_controls():
                 ]
             ),
             dbc.Row(control_columns, className="g-3 mt-1"),
+            html.Hr(className="my-2", style={"borderColor": "rgba(0,0,0,0.08)"}),
+            html.Small("PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.", className="text-muted"),
+            ppm_row,
         ],
         className="mt-3 p-3 border rounded-4",
         style={
@@ -459,6 +583,7 @@ def _parse_dashboard_query(search):
         precomputed_query_entropy = None
 
     score_weights = _parse_score_weights_from_query(query_dict)
+    ppm_scale, ppm_floor = _parse_ppm_from_query(query_dict)
 
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
@@ -466,6 +591,8 @@ def _parse_dashboard_query(search):
         "use_entropy_similarity": use_entropy_similarity,
         "use_entropy_value": ["enabled"] if use_entropy_similarity else [],
         "score_weights": score_weights,
+        "ppm_scale": ppm_scale,
+        "ppm_floor": ppm_floor,
         "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
         "scan": _get_url_param(query_dict, "scan", "").strip(),
         "precomputed_query_entropy": precomputed_query_entropy,
@@ -740,6 +867,9 @@ dash_app.layout = html.Div([NAVBAR, BODY])
         Output("score-weight-tanimoto", "value"),
         Output("score-weight-spectral", "value"),
         Output("score-weight-max-cosine", "value"),
+        Output("score-weight-shared-peaks", "value"),
+        Output("ppm-scale", "value"),
+        Output("ppm-floor", "value"),
     ],
     [Input("url", "search")],
 )
@@ -754,6 +884,9 @@ def determine_task_from_url(search):
         score_weight_inputs["tanimoto"],
         score_weight_inputs["spectral_similarity"],
         score_weight_inputs["max_cosine"],
+        score_weight_inputs["shared_peaks"],
+        query_state["ppm_scale"],
+        query_state["ppm_floor"],
     )
 
 
@@ -788,6 +921,8 @@ def render_detail_panel(search):
     use_entropy_similarity = query_state["use_entropy_similarity"]
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
     score_weights = query_state["score_weights"]
+    ppm_scale = query_state["ppm_scale"]
+    ppm_floor = query_state["ppm_floor"]
 
     if not task_id or not scan:
         return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), html.Div(), None
@@ -800,6 +935,8 @@ def render_detail_panel(search):
             use_entropy_similarity=use_entropy_similarity,
             score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
+            ppm_scale=ppm_scale,
+            mz_precision_floor=ppm_floor,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else html.Div()
@@ -812,6 +949,8 @@ def render_detail_panel(search):
             "workflow_choice": workflow_choice,
             "use_entropy_similarity": use_entropy_similarity,
             "score_weights": score_weights,
+            "ppm_scale": ppm_scale,
+            "ppm_floor": ppm_floor,
             "precomputed_query_entropy": precomputed_query_entropy,
         }
     except Exception as exc:
@@ -840,6 +979,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
     use_entropy_similarity = bool(scan_data.get("use_entropy_similarity", False))
     score_weights = _normalize_score_weights(scan_data.get("score_weights"))
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(scan_data.get("ppm_scale"), scan_data.get("ppm_floor"))
     use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
@@ -856,6 +996,8 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
             precomputed_query_entropy=precomputed_query_entropy,
+            ppm_scale=ppm_scale,
+            mz_precision_floor=ppm_floor,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else panel_ui
@@ -890,6 +1032,9 @@ def reset_pubchem_overrides_on_page_change(search):
         State("score-weight-tanimoto", "value"),
         State("score-weight-spectral", "value"),
         State("score-weight-max-cosine", "value"),
+        State("score-weight-shared-peaks", "value"),
+        State("ppm-scale", "value"),
+        State("ppm-floor", "value"),
     ],
 )
 def load_library_matches_callback(
@@ -902,6 +1047,9 @@ def load_library_matches_callback(
     tanimoto_weight_value,
     spectral_weight_value,
     max_cosine_weight_value,
+    shared_peaks_weight_value,
+    ppm_scale_value,
+    ppm_floor_value,
 ):
     """Stage 1 — fetch library matches and report what was found."""
     query_state = _parse_dashboard_query(search)
@@ -912,6 +1060,8 @@ def load_library_matches_callback(
         workflow_choice = query_state["workflow_choice"]
         use_entropy_similarity = query_state["use_entropy_similarity"]
         score_weights = query_state["score_weights"]
+        ppm_scale = query_state["ppm_scale"]
+        ppm_floor = query_state["ppm_floor"]
     else:
         task_id = (task_id or "").strip()
         workflow_choice = (workflow_choice or "auto").strip().lower()
@@ -921,7 +1071,9 @@ def load_library_matches_callback(
             tanimoto_weight_value,
             spectral_weight_value,
             max_cosine_weight_value,
+            shared_peaks_weight_value,
         )
+        ppm_scale, ppm_floor = _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value)
 
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
@@ -998,6 +1150,8 @@ def load_library_matches_callback(
         "resolved_workflow": resolved_workflow,
         "use_entropy_similarity": use_entropy_similarity,
         "score_weights": score_weights,
+        "ppm_scale": ppm_scale,
+        "ppm_floor": ppm_floor,
         "task_info": task_info,
     }
 
@@ -1019,19 +1173,21 @@ def compute_and_render_scores(matches_json, params):
     resolved_workflow = params["resolved_workflow"]
     use_entropy_similarity = params["use_entropy_similarity"]
     score_weights = _normalize_score_weights(params.get("score_weights"))
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
     task_info = params.get("task_info") or {}
     custom_score_weights_active = not _score_weights_are_default(score_weights)
     score_weight_query_suffix = _serialize_score_weights_for_query(score_weights)
+    ppm_query_suffix = _serialize_ppm_for_query(ppm_scale, ppm_floor)
 
     try:
-        matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
-        summary_df = _compute_scan_level_confidence(
-            matches_df,
-            task_id=task_id,
-            workflow_choice=resolved_workflow,
-            use_entropy_similarity=use_entropy_similarity,
-            score_weights=score_weights,
+        score_weights_tuple = tuple(sorted(score_weights.items()))
+        summary_json = _compute_scores_cached(
+            task_id, workflow_choice, resolved_workflow, use_entropy_similarity, score_weights_tuple,
+            ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
         )
+        if summary_json is None:
+            return dbc.Alert("No library matches were found for this task.", color="warning")
+        summary_df = pd.read_json(io.StringIO(summary_json), orient="split")
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
 
@@ -1053,12 +1209,18 @@ def compute_and_render_scores(matches_json, params):
     table_df["support"] = (
         table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
     )
+
+    _sk_counts = table_df["structure_key"].value_counts()
+    _duplicate_structure_keys = set(_sk_counts[_sk_counts > 1].index)
+
     table_df["compound_link"] = table_df.apply(
         lambda row: (
-            f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
+            ("🔁 " if row.get("structure_key") in _duplicate_structure_keys else "")
+            + f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
             f"&workflow={urllib.parse.quote(str(workflow_choice))}"
             f"&entropy={'1' if use_entropy_similarity else '0'}"
             f"{score_weight_query_suffix}"
+            f"{ppm_query_suffix}"
             f"&scan={urllib.parse.quote(str(row['scan']))}"
             + (f"&qe={row['query_entropy']}" if row.get("query_entropy") is not None else "")
             + "&detail=1)"
@@ -1235,16 +1397,18 @@ def download_summary_csv(n_clicks, matches_json, params):
     resolved_workflow = params.get("resolved_workflow", "auto")
     use_entropy_similarity = params.get("use_entropy_similarity", False)
     score_weights = _normalize_score_weights(params.get("score_weights"))
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
 
     try:
-        matches_df = pd.read_json(io.StringIO(matches_json), orient="split")
-        summary_df = _compute_scan_level_confidence(
-            matches_df,
-            task_id=task_id,
-            workflow_choice=resolved_workflow,
-            use_entropy_similarity=use_entropy_similarity,
-            score_weights=score_weights,
+        workflow_choice = params.get("workflow_choice", "auto")
+        score_weights_tuple = tuple(sorted(score_weights.items()))
+        summary_json = _compute_scores_cached(
+            task_id, workflow_choice, resolved_workflow, use_entropy_similarity, score_weights_tuple,
+            ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
         )
+        if summary_json is None:
+            return no_update
+        summary_df = pd.read_json(io.StringIO(summary_json), orient="split")
     except Exception:
         return no_update
 
