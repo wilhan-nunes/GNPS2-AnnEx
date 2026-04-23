@@ -67,7 +67,11 @@ def _normalize_library_matches_dataframe(df):
         if matched_column is not None:
             work_df = work_df.rename(columns={matched_column: canonical_name})
 
+    work_df = _propagate_structure_by_name(work_df)
     return work_df
+
+
+_STRUCTURE_FIELDS = ["Smiles", "InChIKey", "InChIKey-Planar", "INCHI"]
 
 
 def _is_valid_field(value) -> bool:
@@ -186,6 +190,78 @@ def _build_positional_isomer_group_key(inchi="", smiles=""):
             pass
 
     return ""
+
+
+def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fill missing structural fields for rows whose Compound_Name exactly matches
+    another row that already has structure data.
+
+    Only propagates when every structured row in a name group resolves to the
+    same canonical planar InChIKey.  If a name maps to multiple different
+    structures the group is skipped entirely — an ambiguous synonym should never
+    silently receive the wrong structure.
+
+    Fields propagated (when present in the DataFrame):
+        Smiles, InChIKey, InChIKey-Planar, INCHI
+    """
+    if "Compound_Name" not in df.columns:
+        return df
+
+    present_fields = [f for f in _STRUCTURE_FIELDS if f in df.columns]
+    if not present_fields:
+        return df
+
+    work_df = df.copy()
+
+    def _row_has_structure(row) -> bool:
+        return any(_is_valid_field(row.get(f)) for f in present_fields)
+
+    has_structure = work_df.apply(_row_has_structure, axis=1)
+    if not has_structure.any():
+        return work_df
+
+    # Build a per-name source record: {name → row dict} for unambiguous names.
+    name_to_source: dict = {}
+    for name, group in work_df[has_structure].groupby("Compound_Name"):
+        name = str(name).strip()
+        if not name or name.lower() in {"nan", "none"}:
+            continue
+        # Require all structured rows in the group to share the same canonical key.
+        keys = {_canonical_structure_key(row) for _, row in group.iterrows()}
+        keys.discard("UNKNOWN_STRUCTURE")
+        if len(keys) != 1:
+            # 0 → all resolved to UNKNOWN (no usable structure); >1 → ambiguous name
+            continue
+        # Pick the row with the most non-empty structure fields as the source.
+        best_row = max(
+            (row for _, row in group.iterrows()),
+            key=lambda r: sum(1 for f in present_fields if _is_valid_field(r.get(f))),
+        )
+        name_to_source[name] = {f: best_row.get(f) for f in present_fields}
+
+    if not name_to_source:
+        return work_df
+
+    needs_structure = ~has_structure
+    if not needs_structure.any():
+        return work_df
+
+    filled = 0
+    for idx in work_df.index[needs_structure]:
+        name = str(work_df.at[idx, "Compound_Name"]).strip()
+        source = name_to_source.get(name)
+        if source is None:
+            continue
+        for field, value in source.items():
+            if _is_valid_field(value):
+                work_df.at[idx, field] = value
+        filled += 1
+
+    if filled:
+        logger.debug("_propagate_structure_by_name: filled structure for %d row(s)", filled)
+
+    return work_df
 
 
 def _annotate_support_groups(df):

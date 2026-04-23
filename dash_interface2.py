@@ -72,40 +72,47 @@ _SUMMARY_COLUMN_DEFS = [
         "headerTooltip": "🔁 indicates the same structure key is proposed for multiple scans.",
     },
     {
-        "headerName": "Support (planar structure or isomer family / total)",
+        "headerName": "Structure Support",
+        "headerTooltip": "Fraction of library hits supporting the proposed annotation / total matches (based on structure key).",
         "field": "support",
-        "minWidth": 220,
+        "width": 100,
+        "minWidth": 100,
+        "cellStyle": {
+            "textAlign": "center",
+        },
     },
     {
-        "headerName": f"Adjusted Support (Additive smoothing α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g})",
+        "headerName": "Adjusted Support",
         "field": "adjusted_support_score",
-        "headerTooltip": "Adjusted support score with additive (Laplace) smoothing to mitigate small-sample effects. alpha = number of supporting matches added; beta = alpha + number of non-supporting matches added.",
+        "headerTooltip": f"Adjusted support score with additive (Laplace) smoothing to mitigate small-sample effects.\n alpha = number of supporting matches added; beta = alpha + number of non-supporting matches added. α={LAPLACE_ALPHA:g}, β={LAPLACE_BETA:g}",
+        "width": 80,
+        "minWidth": 80,
         "maxWidth": 190,
         "cellStyle": {
             "styleConditions": [
                 {
                     "condition": "params.value >= 0.9",
-                    "style": {"backgroundColor": "#0c2c84", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                    "style": {"backgroundColor": "#0f5132", "color": "#d1e7dd", "fontWeight": 600, "textAlign": "center"},
                 },
                 {
                     "condition": "params.value >= 0.8 && params.value < 0.9",
-                    "style": {"backgroundColor": "#225ea8", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                    "style": {"backgroundColor": "#52b788", "color": "#ffffff", "fontWeight": 600, "textAlign": "center"},
                 },
                 {
                     "condition": "params.value >= 0.7 && params.value < 0.8",
-                    "style": {"backgroundColor": "#1d91c0", "color": "#f7fbff", "fontWeight": 600, "textAlign": "center"},
+                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
                 },
                 {
-                    "condition": "params.value >= 0.6 && params.value < 0.7",
-                    "style": {"backgroundColor": "#41b6c4", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                    "condition": "params.value >= 0.55 && params.value < 0.7",
+                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
                 },
                 {
-                    "condition": "params.value >= 0.5 && params.value < 0.6",
-                    "style": {"backgroundColor": "#7fcdbb", "color": "#08306b", "fontWeight": 600, "textAlign": "center"},
+                    "condition": "params.value >= 0.4 && params.value < 0.55",
+                    "style": {"backgroundColor": "#ffe5cc", "color": "#7c3c00", "fontWeight": 600, "textAlign": "center"},
                 },
                 {
-                    "condition": "params.value < 0.5",
-                    "style": {"backgroundColor": "#ccece6", "color": "#0b3d4f", "fontWeight": 600, "textAlign": "center"},
+                    "condition": "params.value < 0.4",
+                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
                 },
             ],
             "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
@@ -140,10 +147,10 @@ _SUMMARY_COLUMN_DEFS = [
         },
     },
     {
-        "headerName": "Query Entropy (S)",
+        "headerName": "Input Spectrum Entropy (S)",
         "field": "query_entropy",
         "maxWidth": 135,
-        "headerTooltip": "Spectral entropy of the query spectrum (nats). Higher S = more uniform peak distribution. Thresholds: <0.5 noisy, 0.5–1.0 moderate, 1.0–1.75 clean, ≥1.75 very diffuse. Only computed when entropy scoring is enabled.",
+        "headerTooltip": "Spectral entropy of the query spectrum (nats). Higher S = more uniform peak distribution. Thresholds: <0.5 noisy, 0.5–1.0 moderate, 1.0–1.75 clean, ≥1.75 very diffuse.",
         "tooltipField": "query_entropy_label",
         "cellStyle": {
             "styleConditions": [
@@ -209,10 +216,10 @@ _SUMMARY_COLUMN_DEFS = [
         "cellStyle": {"textAlign": "center"},
     },
     {
-        "headerName": "Mean |MZError| (ppm)",
-        "field": "mean_abs_ppm_error",
+        "headerName": "Median |MZError| (ppm)",
+        "field": "median_abs_ppm_error",
         "maxWidth": 145,
-        "headerTooltip": "Mean absolute precursor m/z error (ppm) across hits in the top support group. Lower values indicate better mass accuracy.",
+        "headerTooltip": "Median absolute precursor m/z error (ppm) across hits in the top support group. Lower values indicate better mass accuracy.",
         "cellStyle": {"textAlign": "center"},
     },
     {
@@ -225,7 +232,7 @@ _SUMMARY_COLUMN_DEFS = [
 ]
 
 # Fields hidden by default (diagnostic / advanced columns).
-_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity", "mean_abs_ppm_error", "mz_precision"}
+_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity", "median_abs_ppm_error", "mz_precision", "shared_peaks_score"}
 
 
 def _taskinfo_key(value):
@@ -573,9 +580,6 @@ def _parse_dashboard_query(search):
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
-    entropy_param = _get_url_param(query_dict, "entropy", "0").strip().lower()
-    use_entropy_similarity = entropy_param not in {"0", "false", "off", "no"}
-
     qe_raw = _get_url_param(query_dict, "qe", "").strip()
     try:
         precomputed_query_entropy = float(qe_raw) if qe_raw else None
@@ -588,8 +592,6 @@ def _parse_dashboard_query(search):
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
         "workflow_choice": workflow_choice,
-        "use_entropy_similarity": use_entropy_similarity,
-        "use_entropy_value": ["enabled"] if use_entropy_similarity else [],
         "score_weights": score_weights,
         "ppm_scale": ppm_scale,
         "ppm_floor": ppm_floor,
@@ -644,21 +646,7 @@ CONTROLS_CARD = dbc.Card(
                                 style={"borderRadius": "10px", "borderColor": "rgba(0,0,0,0.12)"},
                             ),
                         ],
-                        md=3,
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label("\u00a0", className="d-block small"),
-                            dbc.Checklist(
-                                id="use-entropy",
-                                options=[{"label": "Entropy similarity", "value": "enabled"}],
-                                value=[],
-                                switch=True,
-                                className="mt-1",
-                            ),
-                        ],
-                        md=3,
-                        className="d-flex flex-column justify-content-end",
+                        md=4,
                     ),
                 ],
                 className="g-3",
@@ -700,19 +688,71 @@ INFO_MODAL = dbc.Modal(
         dbc.ModalBody(
             [
                 html.P(
-                    "The evidence score (0–100) is computed per scan from four weighted signals.",
+                    "The evidence score (0–100) is computed per scan from five weighted signals, then multiplied by an m/z precision factor.",
                     className="text-muted",
                 ),
-                html.H6("Default score weights", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                html.H6("Score components (default weights)", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
                 dbc.ListGroup(
                     [
-                        dbc.ListGroupItem([html.Strong("50% "), "Structure agreement — supporting hits / total hits (same planar structure or positional-isomer family)"]),
-                        dbc.ListGroupItem([html.Strong("15% "), "Tanimoto (ECFP4) — mean pairwise structural similarity; fallback to structure agreement when SMILES unavailable"]),
-                        dbc.ListGroupItem([html.Strong("25% "), "Spectral similarity — entropy similarity when enabled; fallback to mean cosine otherwise"]),
-                        dbc.ListGroupItem([html.Strong("10% "), "Max cosine — best MQScore observed in the scan"]),
+                        dbc.ListGroupItem([
+                            html.Strong("~45% "), "Structure agreement",
+                            html.Br(),
+                            html.Small(
+                                "Supporting hits ÷ total hits. Hits are grouped by planar InChIKey (stereo ignored) and positional-isomer family (Murcko scaffold + molecular formula). Higher fractions mean multiple independent library entries agree on the same annotation.",
+                                className="text-muted",
+                            ),
+                        ]),
+                        dbc.ListGroupItem([
+                            html.Strong("~14% "), "Tanimoto structural diversity (WCRS)",
+                            html.Br(),
+                            html.Small(
+                                "WCRS (Weighted Centroid Representativeness Score) picks the most representative annotation group using ECFP4 fingerprints (Morgan r=2, 2048-bit). The reported score is d̄ᵢ — the weighted average pairwise Tanimoto similarity from the winner to all other evidence groups. Falls back to structure agreement when fewer than 2 unique valid SMILES are available.",
+                                className="text-muted",
+                            ),
+                        ]),
+                        dbc.ListGroupItem([
+                            html.Strong("~23% "), "Spectral reproducibility (cosine consistency)",
+                            html.Br(),
+                            html.Small(
+                                "1 − clamp(std/mean, 0, 1) of MQScores (cosine similarities) within the winning support group. Measures how consistently the spectrum matches independent library entries — a score of 1.0 means all cosines are identical, 0.0 means maximal spread. Single-hit groups default to 1.0.",
+                                className="text-muted",
+                            ),
+                        ]),
+                        dbc.ListGroupItem([
+                            html.Strong("~9% "), "Best cosine score",
+                            html.Br(),
+                            html.Small(
+                                "The maximum MQScore (cosine similarity) observed across all library hits for this scan. Reflects the quality of the best individual spectral match.",
+                                className="text-muted",
+                            ),
+                        ]),
+                        dbc.ListGroupItem([
+                            html.Strong("~9% "), "Shared peaks",
+                            html.Br(),
+                            html.Small(
+                                "Soft-normalised mean fragment-ion overlap: x / (x + 5). Counts fragment ions matched between the query spectrum and library hits in the winning group. Penalises scans with very few shared peaks, even when cosine is high.",
+                                className="text-muted",
+                            ),
+                        ]),
                     ],
                     flush=True,
                     className="mb-3",
+                ),
+                html.H6("m/z precision multiplier", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                html.P(
+                    [
+                        "The weighted sum is multiplied by ",
+                        html.Code("exp(−|ppm| / 10)"),
+                        " (floored at 0.5). The PPM value used is the ",
+                        html.Strong("median"),
+                        " absolute precursor m/z error across supporting hits — robust to single miscalibrated library entries. A scan with ≤1 ppm error loses less than 10% of its score; one at 10 ppm loses ~37%.",
+                    ],
+                    className="small text-muted",
+                ),
+                dbc.Alert(
+                    "Percentages are approximate (nominal ratio 50:15:25:10:10, normalised to sum to 1).",
+                    color="light",
+                    className="mb-2 py-2 small border",
                 ),
                 dbc.Alert(
                     "Dev note: the local dashboard can override these defaults with the score-weight tuning controls.",
@@ -862,7 +902,6 @@ dash_app.layout = html.Div([NAVBAR, BODY])
     [
         Output("task-id", "value"),
         Output("workflow-choice", "value"),
-        Output("use-entropy", "value"),
         Output("score-weight-structure", "value"),
         Output("score-weight-tanimoto", "value"),
         Output("score-weight-spectral", "value"),
@@ -879,7 +918,6 @@ def determine_task_from_url(search):
     return (
         query_state["task_id"],
         query_state["workflow_choice"],
-        query_state["use_entropy_value"],
         score_weight_inputs["structure_agreement"],
         score_weight_inputs["tanimoto"],
         score_weight_inputs["spectral_similarity"],
@@ -918,7 +956,6 @@ def render_detail_panel(search):
     task_id = query_state["task_id"]
     scan = query_state["scan"]
     workflow_choice = query_state["workflow_choice"]
-    use_entropy_similarity = query_state["use_entropy_similarity"]
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
     score_weights = query_state["score_weights"]
     ppm_scale = query_state["ppm_scale"]
@@ -932,7 +969,7 @@ def render_detail_panel(search):
             task_id,
             scan,
             workflow_choice,
-            use_entropy_similarity=use_entropy_similarity,
+            use_entropy_similarity=False,
             score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
             ppm_scale=ppm_scale,
@@ -947,7 +984,6 @@ def render_detail_panel(search):
             "task_id": task_id,
             "scan": scan,
             "workflow_choice": workflow_choice,
-            "use_entropy_similarity": use_entropy_similarity,
             "score_weights": score_weights,
             "ppm_scale": ppm_scale,
             "ppm_floor": ppm_floor,
@@ -977,7 +1013,6 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
     workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
-    use_entropy_similarity = bool(scan_data.get("use_entropy_similarity", False))
     score_weights = _normalize_score_weights(scan_data.get("score_weights"))
     ppm_scale, ppm_floor = _parse_ppm_from_inputs(scan_data.get("ppm_scale"), scan_data.get("ppm_floor"))
     use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
@@ -991,7 +1026,7 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             task_id,
             scan,
             workflow_choice,
-            use_entropy_similarity=use_entropy_similarity,
+            use_entropy_similarity=False,
             score_weights=score_weights,
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
@@ -1027,7 +1062,6 @@ def reset_pubchem_overrides_on_page_change(search):
     [
         State("task-id", "value"),
         State("workflow-choice", "value"),
-        State("use-entropy", "value"),
         State("score-weight-structure", "value"),
         State("score-weight-tanimoto", "value"),
         State("score-weight-spectral", "value"),
@@ -1042,7 +1076,6 @@ def load_library_matches_callback(
     search,
     task_id,
     workflow_choice,
-    use_entropy_value,
     structure_weight_value,
     tanimoto_weight_value,
     spectral_weight_value,
@@ -1058,14 +1091,12 @@ def load_library_matches_callback(
     if should_autorun:
         task_id = query_state["task_id"]
         workflow_choice = query_state["workflow_choice"]
-        use_entropy_similarity = query_state["use_entropy_similarity"]
         score_weights = query_state["score_weights"]
         ppm_scale = query_state["ppm_scale"]
         ppm_floor = query_state["ppm_floor"]
     else:
         task_id = (task_id or "").strip()
         workflow_choice = (workflow_choice or "auto").strip().lower()
-        use_entropy_similarity = isinstance(use_entropy_value, list) and ("enabled" in use_entropy_value)
         score_weights = _parse_score_weights_from_inputs(
             structure_weight_value,
             tanimoto_weight_value,
@@ -1094,13 +1125,6 @@ def load_library_matches_callback(
     n_matches = len(matches_df)
     n_scans = matches_df[scan_col].nunique() if scan_col else "?"
 
-    entropy_note = ""
-    if use_entropy_similarity:
-        entropy_note = (
-            f" Spectral entropy similarity is ON — computing USI comparisons for {n_scans} scan(s). "
-            "This may take several minutes for large datasets."
-        )
-
     status = dbc.Card(
         dbc.CardBody(
             [
@@ -1119,14 +1143,10 @@ def load_library_matches_callback(
                     className="mb-2",
                 ),
                 html.Div(
-                    [
-                        html.Span(
-                            "Scoring model: structure agreement, Tanimoto ECFP4, cosine.",
-                            className="text-muted",
-                        ),
-                        html.Span(entropy_note, className="text-muted"),
-                        html.Span(" Results will appear below.", className="text-muted"),
-                    ]
+                    html.Span(
+                        "Scoring model: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks. Results will appear below.",
+                        className="text-muted",
+                    ),
                 ),
             ]
         ),
@@ -1148,7 +1168,6 @@ def load_library_matches_callback(
         "task_id": task_id,
         "workflow_choice": workflow_choice,
         "resolved_workflow": resolved_workflow,
-        "use_entropy_similarity": use_entropy_similarity,
         "score_weights": score_weights,
         "ppm_scale": ppm_scale,
         "ppm_floor": ppm_floor,
@@ -1171,7 +1190,6 @@ def compute_and_render_scores(matches_json, params):
     task_id = params["task_id"]
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
-    use_entropy_similarity = params["use_entropy_similarity"]
     score_weights = _normalize_score_weights(params.get("score_weights"))
     ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
     task_info = params.get("task_info") or {}
@@ -1182,7 +1200,7 @@ def compute_and_render_scores(matches_json, params):
     try:
         score_weights_tuple = tuple(sorted(score_weights.items()))
         summary_json = _compute_scores_cached(
-            task_id, workflow_choice, resolved_workflow, use_entropy_similarity, score_weights_tuple,
+            task_id, workflow_choice, resolved_workflow, score_weights_tuple,
             ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
         )
         if summary_json is None:
@@ -1218,7 +1236,6 @@ def compute_and_render_scores(matches_json, params):
             ("🔁 " if row.get("structure_key") in _duplicate_structure_keys else "")
             + f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
             f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-            f"&entropy={'1' if use_entropy_similarity else '0'}"
             f"{score_weight_query_suffix}"
             f"{ppm_query_suffix}"
             f"&scan={urllib.parse.quote(str(row['scan']))}"
@@ -1279,7 +1296,7 @@ def compute_and_render_scores(matches_json, params):
                                         href=f"https://gnps2.org/status?task={task_id}",
                                         target="_blank",
                                     ),
-                                    f" · Entropy scoring: {'enabled' if use_entropy_similarity else 'disabled'}",
+                                    " · Scoring: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks",
                                 ]
                             ),
                             html.Small(
@@ -1395,7 +1412,6 @@ def download_summary_csv(n_clicks, matches_json, params):
 
     task_id = params.get("task_id", "unknown")
     resolved_workflow = params.get("resolved_workflow", "auto")
-    use_entropy_similarity = params.get("use_entropy_similarity", False)
     score_weights = _normalize_score_weights(params.get("score_weights"))
     ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
 
@@ -1403,7 +1419,7 @@ def download_summary_csv(n_clicks, matches_json, params):
         workflow_choice = params.get("workflow_choice", "auto")
         score_weights_tuple = tuple(sorted(score_weights.items()))
         summary_json = _compute_scores_cached(
-            task_id, workflow_choice, resolved_workflow, use_entropy_similarity, score_weights_tuple,
+            task_id, workflow_choice, resolved_workflow, score_weights_tuple,
             ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
         )
         if summary_json is None:
@@ -1697,7 +1713,7 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
                     html.Small(
                         [
                             f"ECFP4 pairwise Tanimoto across {len(compounds_data)} unique compound(s). "
-                            "Green = structurally similar, red = dissimilar. Upper triangle omitted. ",
+                            "Green = structurally similar, red = dissimilar.",
                             html.Span(source_note, className="text-muted"),
                         ]
                     ),

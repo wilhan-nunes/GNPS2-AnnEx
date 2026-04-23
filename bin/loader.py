@@ -152,10 +152,10 @@ def _load_task_information_cached(task_id):
 
 
 @cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
-def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, use_entropy_similarity, score_weights_tuple, ppm_scale=None, mz_precision_floor=None):
+def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_weights_tuple, ppm_scale=None, mz_precision_floor=None):
     """Memoized wrapper around _compute_scan_level_confidence.
 
-    Cache key: task_id + workflow_choice + resolved_workflow + entropy flag + score weights + ppm params.
+    Cache key: task_id + workflow_choice + resolved_workflow + score weights + ppm params.
     TTL matches the library-match cache so results stay consistent.
     """
     from .scorer import _compute_scan_level_confidence  # local import avoids circular dep
@@ -169,7 +169,7 @@ def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, use_entr
         matches_df,
         task_id=task_id,
         workflow_choice=resolved_workflow,
-        use_entropy_similarity=use_entropy_similarity,
+        use_entropy_similarity=False,
         score_weights=score_weights,
         ppm_scale=ppm_scale,
         mz_precision_floor=mz_precision_floor,

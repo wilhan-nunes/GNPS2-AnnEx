@@ -15,7 +15,8 @@ from .normalizer import (
     _normalize_library_usi,
     _to_text,
 )
-from .tanimoto import scan_tanimoto
+from .tanimoto import _canonical_smiles, compute_cross_group_tanimoto, scan_tanimoto
+from .wcrs import Subgroup, wcrs
 from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
 
 logger = logging.getLogger(__name__)
@@ -254,14 +255,61 @@ def _compute_scan_level_confidence(
             .agg(
                 count=("_support_group_key", "size"),
                 mean_cosine=("_cosine", "mean"),
+                std_cosine=("_cosine", "std"),
                 max_cosine=("_cosine", "max"),
                 mean_shared_peaks=("_shared_peaks", "mean"),
-                mean_abs_ppm=("_abs_ppm", "mean"),
+                median_abs_ppm=("_abs_ppm", "median"),
             )
             .sort_values(["count", "mean_cosine", "max_cosine"], ascending=False)
         )
 
-        best = grouped.iloc[0]
+        # Extract one representative SMILES per support group (highest-cosine hit).
+        group_rep_smiles: dict = {}
+        if smiles_col is not None:
+            for gkey, gdf in scan_df.groupby("_support_group_key"):
+                top_hit = gdf.sort_values("_cosine", ascending=False).iloc[0]
+                raw_smi = _to_text(top_hit.get(smiles_col, ""))
+                if raw_smi and raw_smi.lower() not in {"nan", "none"}:
+                    canonical = _canonical_smiles(raw_smi)
+                    group_rep_smiles[gkey] = canonical if canonical else raw_smi
+                else:
+                    group_rep_smiles[gkey] = None
+
+        # Build WCRS subgroups from per-group hit counts.
+        wcrs_subgroups = [
+            Subgroup(id=str(row["_support_group_key"]), size=int(row["count"]))
+            for _, row in grouped.iterrows()
+        ]
+
+        # WCRS: determine tanimoto_score as d̄ᵢ of the most representative group.
+        wcrs_winner_key = None
+        if len(wcrs_subgroups) >= 2 and any(v is not None for v in group_rep_smiles.values()):
+            cross_sim = compute_cross_group_tanimoto(group_rep_smiles)
+            wcrs_results, wcrs_winner_key = wcrs(wcrs_subgroups, cross_sim, alpha=1.0)
+            winner_wcrs = next(r for r in wcrs_results if r.id == wcrs_winner_key)
+            tanimoto_score: float = winner_wcrs.avg_similarity
+            tanimoto_source: str = "tanimoto_wcrs"
+        elif len(wcrs_subgroups) == 1 and any(v is not None for v in group_rep_smiles.values()):
+            tanimoto_score = 1.0
+            tanimoto_source = "single_structure"
+        else:
+            # No usable SMILES — fall back to count-based support fraction.
+            preliminary_fraction = grouped.iloc[0]["count"] / total_matches if total_matches else 0.0
+            scan_smiles = scan_df[smiles_col].tolist() if smiles_col is not None else []
+            tanimoto_score, tanimoto_source = scan_tanimoto(scan_smiles, preliminary_fraction)
+
+        # Resolve winner group: WCRS winner when available, else count-based best.
+        if wcrs_winner_key is not None:
+            mask = grouped["_support_group_key"] == wcrs_winner_key
+            best = grouped[mask].iloc[0] if mask.any() else grouped.iloc[0]
+        else:
+            best = grouped.iloc[0]
+
+        # Preserve count-based top compound for reference in the output.
+        _count_hits = scan_df[scan_df["_support_group_key"] == grouped.iloc[0]["_support_group_key"]]
+        _count_mode = _count_hits["_compound"].mode()
+        count_based_top_compound = _count_mode.iloc[0] if len(_count_mode) > 0 else ""
+
         support_group_key = best["_support_group_key"]
         structure_hits = scan_df[scan_df["_support_group_key"] == support_group_key]
         representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
@@ -278,16 +326,11 @@ def _compute_scan_level_confidence(
         shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
 
         # MZErrorPPM: multiplicative precision factor, floored to avoid over-penalising low-res instruments
-        raw_abs_ppm = float(best["mean_abs_ppm"])
+        raw_abs_ppm = float(best["median_abs_ppm"])
         if math.isnan(raw_abs_ppm) or mz_error_col is None:
             mz_precision = 1.0  # no data → no penalty
         else:
             mz_precision = max(_mz_precision_floor, math.exp(-raw_abs_ppm / _ppm_scale))
-
-        # Tanimoto structural similarity (ECFP4, mean pairwise across unique library SMILES).
-        # PubChem lookups are handled only on user request in detail view.
-        scan_smiles = scan_df[smiles_col].tolist() if smiles_col is not None else []
-        tanimoto_score, tanimoto_source = scan_tanimoto(scan_smiles, support_fraction)
 
         # Always build query_usi (needed for entropy similarity and USI fallback).
         representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
@@ -302,16 +345,15 @@ def _compute_scan_level_confidence(
         if q_entropy_result is not None:
             query_entropy, query_entropy_label = q_entropy_result
 
-        entropy_similarity = None
-        entropy_source = "disabled"
-        if use_entropy_similarity:
-            representative_library_usi = _normalize_library_usi(representative_row.get("_library_usi"))
-            entropy_similarity = _get_entropy_similarity_from_usis(query_usi, representative_library_usi)
-            entropy_source = "spectral_entropy"
-        if entropy_similarity is None:
-            entropy_similarity = mean_cosine
-            if use_entropy_similarity:
-                entropy_source = "mean_cosine_fallback"
+        # Cosine consistency: 1 − clamp(std/mean, 0, 1). Single-hit groups get 1.0.
+        _std_cosine = float(best["std_cosine"])
+        if math.isnan(_std_cosine) or int(best["count"]) < 2:
+            cosine_consistency = 1.0
+        else:
+            cv = _std_cosine / mean_cosine if mean_cosine > 0 else 1.0
+            cosine_consistency = max(0.0, 1.0 - min(1.0, cv))
+        entropy_similarity = cosine_consistency
+        entropy_source = "cosine_consistency"
 
         confidence_score = _compute_confidence_score(
             support_fraction,
@@ -335,6 +377,7 @@ def _compute_scan_level_confidence(
                 "scan": scan,
                 "precursor_mz": precursor_mz,
                 "top_compound": top_compound,
+                "count_based_top_compound": count_based_top_compound,
                 "structure_key": structure_key,
                 "support_group_key": support_group_key,
                 "supporting_matches": int(best["count"]),
@@ -347,7 +390,8 @@ def _compute_scan_level_confidence(
                 "tanimoto_score": round(float(tanimoto_score), 4),
                 "tanimoto_source": tanimoto_source,
                 "shared_peaks": round(raw_shared_peaks, 2),
-                "mean_abs_ppm_error": round(raw_abs_ppm, 3) if not math.isnan(raw_abs_ppm) else None,
+                "shared_peaks_score": round(shared_peaks_score, 4),
+                "median_abs_ppm_error": round(raw_abs_ppm, 3) if not math.isnan(raw_abs_ppm) else None,
                 "mz_precision": round(mz_precision, 4),
                 "confidence_score": round(confidence_score, 1),
                 "confidence_label": confidence_label,
