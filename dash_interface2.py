@@ -174,7 +174,7 @@ _SUMMARY_COLUMN_DEFS = [
             "defaultStyle": {"textAlign": "center"},
         },
     },
-    {"field": "query_entropy_label", "hide": True, "headerName": "Query Entropy Label"},
+    {"field": "query_entropy_label", "hide": True, "headerName": "Entropy Label"},
     {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
     {
         "headerName": "Tanimoto (ECFP4)",

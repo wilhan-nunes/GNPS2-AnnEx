@@ -1590,7 +1590,7 @@ def _build_detail_panel(
             )
         masst_card = dbc.Card(
             [
-                dbc.CardHeader(html.H5("Biological Context (MASST/REDU) — Per Structure")),
+                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
                 dbc.CardBody(
                     dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
                 ),
