@@ -16,6 +16,38 @@ from .constants import SUPPORTED_WORKFLOWS
 logger = logging.getLogger(__name__)
 
 
+def _clean_compound_name(name: str) -> str:
+    """Clean a library compound name using matchms-derived regex patterns."""
+    if not isinstance(name, str):
+        return name
+    name = name.strip()
+
+    # matchms: _remove_parts_by_regular_expression
+    name = re.split(r"[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,5}_[A-Z,0-9]{4,15}_", name)[-1]
+    name = re.split(r"[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,3}\!", name)[-1]
+    name = re.split(r"((Massbank:)|(MassbankEU:))[A-Z]{2}[0-9]{5,6}.*\|", name)[-1]
+    name = re.split(r"((Massbank:)|(MassbankEU:))[A-Z]{2}[0-9]{5,6}", name)[-1]
+    name = re.split(r"HMDB:HMDB[0-9]{4,7}-[0-9]{1,7}", name)[-1]
+    name = re.split(r"MoNA:[0-9]{5,10}", name)[-1]
+    name = re.split(r"ReSpect:[A-Z]{2,3}[0-9]{6}.*\|", name)[-1]
+    name = re.split(r"[A-Z]{2,3}[0-9]{6}( )", name)[-1]
+    name = re.split(r"^[0-9]{4}_", name)[-1]
+    name = re.split(r"_((HCD)|(CID))[0-9]{2}_[0-9]{5,6}$", name)[0]
+    name = re.split(r"(?: - )?[0-9]+(?:\.[0-9]+)? ?[eE][Vv](?: Unknown)?$", name)[0]
+
+    # matchms: _remove_known_non_compound_parts
+    for part in ["Spectral Match to", "from NIST14", "Massbank:"]:
+        name = name.replace(part, "")
+    name = name.strip("; ")
+
+    # matchms: _remove_misplaced_mass  e.g. "Caffeine 195.0" -> "Caffeine"
+    end = name.split(" ")[-1]
+    if re.search(r"^[0-9]{2,4}\.[0-9]$", end):
+        name = name[: -len(end)].strip()
+
+    return name.strip()
+
+
 def _to_text(value):
     if value is None:
         return ""
