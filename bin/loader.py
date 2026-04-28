@@ -169,7 +169,6 @@ def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_we
         matches_df,
         task_id=task_id,
         workflow_choice=resolved_workflow,
-        use_entropy_similarity=False,
         score_weights=score_weights,
         ppm_scale=ppm_scale,
         mz_precision_floor=mz_precision_floor,

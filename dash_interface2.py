@@ -22,9 +22,12 @@ import io
 
 import pandas as pd
 
-from bin.loader import _load_library_matches, _load_task_information, _compute_scores_cached
+from bin.loader import (
+    _load_library_matches,
+    _load_task_information,
+    _compute_scores_cached,
+)
 from bin.scorer import DEFAULT_SCORE_WEIGHTS, _normalize_score_weights
-
 
 dash_app = dash.Dash(
     name="dashinterface2",
@@ -43,16 +46,24 @@ LAPLACE_BETA = 5.0
 ENABLE_DEV_SCORE_WEIGHT_CONTROLS = True
 
 _SCORE_WEIGHT_INPUT_DEFS = [
-    {"key": "structure_agreement", "id": "score-weight-structure", "label": "Structure agreement"},
+    {
+        "key": "structure_agreement",
+        "id": "score-weight-structure",
+        "label": "Structure agreement",
+    },
     {"key": "tanimoto", "id": "score-weight-tanimoto", "label": "Tanimoto"},
-    {"key": "spectral_similarity", "id": "score-weight-spectral", "label": "Spectral similarity"},
+    {
+        "key": "cosine_consistency",
+        "id": "score-weight-spectral",
+        "label": "Cosine consistency",
+    },
     {"key": "max_cosine", "id": "score-weight-max-cosine", "label": "Max cosine"},
     {"key": "shared_peaks", "id": "score-weight-shared-peaks", "label": "Shared peaks"},
 ]
 _SCORE_WEIGHT_QUERY_PARAMS = {
     "structure_agreement": "w_structure",
     "tanimoto": "w_tanimoto",
-    "spectral_similarity": "w_spectral",
+    "cosine_consistency": "w_spectral",
     "max_cosine": "w_cosine",
     "shared_peaks": "w_shared",
 }
@@ -61,7 +72,14 @@ _SCORE_WEIGHT_QUERY_PARAMS = {
 # Kept at module level so the column-visibility callback can reference them
 # without re-building the full spec on every toggle.
 _SUMMARY_COLUMN_DEFS = [
-    {"headerName": "Scan", "field": "scan", "maxWidth": 95, "type": "numericColumn", "filter": "agNumberColumnFilter", "valueGetter": {"function": "Number(params.data.scan)"}},
+    {
+        "headerName": "Scan",
+        "field": "scan",
+        "maxWidth": 95,
+        "type": "numericColumn",
+        "filter": "agNumberColumnFilter",
+        "valueGetter": {"function": "Number(params.data.scan)"},
+    },
     {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
     {
         "headerName": "Proposed Compound",
@@ -69,7 +87,20 @@ _SUMMARY_COLUMN_DEFS = [
         "cellRenderer": "markdown",
         "linkTarget": "_blank",
         "minWidth": 180,
-        "headerTooltip": "🔁 indicates the same structure key is proposed for multiple scans.",
+        "headerTooltip": "🔁 same structure key proposed for multiple scans.\n⚡ amber highlight = not the top-cosine match for this scan (hover for top-cosine compound name).",
+        "tooltipField": "top_cosine_compound",
+        "cellStyle": {
+            "styleConditions": [
+                {
+                    "condition": "params.data.top_cosine_overridden === true",
+                    "style": {
+                        "backgroundColor": "#fff3cd",
+                        "color": "#664d03",
+                        "fontWeight": 600,
+                    },
+                }
+            ]
+        },
     },
     {
         "headerName": "Structure Support",
@@ -92,27 +123,57 @@ _SUMMARY_COLUMN_DEFS = [
             "styleConditions": [
                 {
                     "condition": "params.value >= 0.9",
-                    "style": {"backgroundColor": "#0f5132", "color": "#d1e7dd", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#0f5132",
+                        "color": "#d1e7dd",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value >= 0.8 && params.value < 0.9",
-                    "style": {"backgroundColor": "#52b788", "color": "#ffffff", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#52b788",
+                        "color": "#ffffff",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value >= 0.7 && params.value < 0.8",
-                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#d1e7dd",
+                        "color": "#0f5132",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value >= 0.55 && params.value < 0.7",
-                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#fff3cd",
+                        "color": "#664d03",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value >= 0.4 && params.value < 0.55",
-                    "style": {"backgroundColor": "#ffe5cc", "color": "#7c3c00", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#ffe5cc",
+                        "color": "#7c3c00",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value < 0.4",
-                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#f8d7da",
+                        "color": "#842029",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
             ],
             "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
@@ -132,15 +193,30 @@ _SUMMARY_COLUMN_DEFS = [
             "styleConditions": [
                 {
                     "condition": "params.value === 'Consistent evidence'",
-                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#d1e7dd",
+                        "color": "#0f5132",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value === 'Inconclusive'",
-                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#fff3cd",
+                        "color": "#664d03",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value === 'Inconsistent evidence'",
-                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#f8d7da",
+                        "color": "#842029",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
             ],
             "defaultStyle": {"fontWeight": 600, "textAlign": "center"},
@@ -156,37 +232,77 @@ _SUMMARY_COLUMN_DEFS = [
             "styleConditions": [
                 {
                     "condition": "params.value !== null && params.value < 0.5",
-                    "style": {"backgroundColor": "#f8d7da", "color": "#842029", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#f8d7da",
+                        "color": "#842029",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value !== null && params.value >= 0.5 && params.value < 1.0",
-                    "style": {"backgroundColor": "#fff3cd", "color": "#664d03", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#fff3cd",
+                        "color": "#664d03",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value !== null && params.value >= 1.0 && params.value < 1.75",
-                    "style": {"backgroundColor": "#d1e7dd", "color": "#0f5132", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#d1e7dd",
+                        "color": "#0f5132",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
                 {
                     "condition": "params.value !== null && params.value >= 1.75",
-                    "style": {"backgroundColor": "#cff4fc", "color": "#055160", "fontWeight": 600, "textAlign": "center"},
+                    "style": {
+                        "backgroundColor": "#cff4fc",
+                        "color": "#055160",
+                        "fontWeight": 600,
+                        "textAlign": "center",
+                    },
                 },
             ],
             "defaultStyle": {"textAlign": "center"},
         },
     },
     {"field": "query_entropy_label", "hide": True, "headerName": "Entropy Label"},
-    {"headerName": "Representative Structure Key", "field": "structure_key", "minWidth": 220},
+    {
+        "field": "top_cosine_overridden",
+        "hide": True,
+        "headerName": "Top Cosine Overridden",
+    },
+    {"field": "top_cosine_compound", "hide": True, "headerName": "Top Cosine Compound"},
+    {
+        "headerName": "Representative Structure Key",
+        "field": "structure_key",
+        "minWidth": 220,
+    },
     {
         "headerName": "Tanimoto (ECFP4)",
         "field": "tanimoto_score",
         "maxWidth": 120,
         "cellStyle": {"textAlign": "center"},
     },
-    {"headerName": "Mean Cosine", "field": "mean_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
-    {"headerName": "Max Cosine", "field": "max_cosine", "maxWidth": 120, "cellStyle": {"textAlign": "center"}},
     {
-        "headerName": "Entropy Similarity",
-        "field": "entropy_similarity",
+        "headerName": "Mean Cosine",
+        "field": "mean_cosine",
+        "maxWidth": 120,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Max Cosine",
+        "field": "max_cosine",
+        "maxWidth": 120,
+        "cellStyle": {"textAlign": "center"},
+    },
+    {
+        "headerName": "Cosine Consistency",
+        "field": "cosine_consistency",
         "maxWidth": 140,
         "cellStyle": {"textAlign": "center"},
     },
@@ -197,8 +313,8 @@ _SUMMARY_COLUMN_DEFS = [
         "cellStyle": {"textAlign": "center"},
     },
     {
-        "headerName": "Entropy Source",
-        "field": "entropy_source",
+        "headerName": "Consistency Source",
+        "field": "cosine_consistency_source",
         "minWidth": 165,
         "cellStyle": {"textAlign": "center"},
     },
@@ -232,7 +348,19 @@ _SUMMARY_COLUMN_DEFS = [
 ]
 
 # Fields hidden by default (diagnostic / advanced columns).
-_DEFAULT_HIDDEN_FIELDS = {"tanimoto_source", "entropy_source", "query_entropy_label", "mean_cosine", "max_cosine", "entropy_similarity", "median_abs_ppm_error", "mz_precision", "shared_peaks_score"}
+_DEFAULT_HIDDEN_FIELDS = {
+    "tanimoto_source",
+    "cosine_consistency_source",
+    "query_entropy_label",
+    "mean_cosine",
+    "max_cosine",
+    "cosine_consistency",
+    "median_abs_ppm_error",
+    "mz_precision",
+    "shared_peaks_score",
+    "top_cosine_overridden",
+    "top_cosine_compound",
+}
 
 
 def _taskinfo_key(value):
@@ -293,18 +421,32 @@ def _build_task_metadata_details(task_info, resolved_workflow):
     if not isinstance(task_info, dict) or not task_info:
         return None
 
-    task_name = _find_taskinfo_value(task_info, ["taskname", "task_name", "title", "description"])
-    status_value = _find_taskinfo_value(task_info, ["task_status", "taskstatus", "status"])
-    workflow_value = _find_taskinfo_value(task_info, ["workflowname", "workflow", "workflowtype"])
+    task_name = _find_taskinfo_value(
+        task_info, ["taskname", "task_name", "title", "description"]
+    )
+    status_value = _find_taskinfo_value(
+        task_info, ["task_status", "taskstatus", "status"]
+    )
+    workflow_value = _find_taskinfo_value(
+        task_info, ["workflowname", "workflow", "workflowtype"]
+    )
     created_value = _find_taskinfo_value(
         task_info,
-        ["created", "create_time", "createtime", "creationtime", "submitted", "submittedon", "starttime", "createdon"],
+        [
+            "created",
+            "create_time",
+            "createtime",
+            "creationtime",
+            "submitted",
+            "submittedon",
+            "starttime",
+            "createdon",
+        ],
     )
 
     summary_rows = []
     for label, value in [
         ("Task name", task_name),
-        ("Status", status_value),
         ("Workflow", workflow_value or _format_workflow_label(resolved_workflow)),
         ("Created", created_value),
     ]:
@@ -360,7 +502,7 @@ def _parse_score_weights_from_inputs(
     input_values = {
         "structure_agreement": structure_value,
         "tanimoto": tanimoto_value,
-        "spectral_similarity": spectral_value,
+        "cosine_consistency": spectral_value,
         "max_cosine": max_cosine_value,
         "shared_peaks": shared_peaks_value,
     }
@@ -403,7 +545,9 @@ def _serialize_score_weights_for_query(score_weights=None):
 
     query_parts = []
     for key, param_name in _SCORE_WEIGHT_QUERY_PARAMS.items():
-        value_text = f"{normalized_score_weights[key] * 100.0:.3f}".rstrip("0").rstrip(".")
+        value_text = f"{normalized_score_weights[key] * 100.0:.3f}".rstrip("0").rstrip(
+            "."
+        )
         query_parts.append(f"&{param_name}={urllib.parse.quote(value_text)}")
     return "".join(query_parts)
 
@@ -434,7 +578,11 @@ def _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value):
     except (ValueError, TypeError):
         ppm_scale = PPM_SCALE
     try:
-        ppm_floor = float(ppm_floor_value) if ppm_floor_value is not None else MZ_PRECISION_FLOOR
+        ppm_floor = (
+            float(ppm_floor_value)
+            if ppm_floor_value is not None
+            else MZ_PRECISION_FLOOR
+        )
         if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
             ppm_floor = MZ_PRECISION_FLOOR
     except (ValueError, TypeError):
@@ -443,7 +591,10 @@ def _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value):
 
 
 def _ppm_params_are_default(ppm_scale, ppm_floor):
-    return abs(float(ppm_scale) - PPM_SCALE) < 1e-6 and abs(float(ppm_floor) - MZ_PRECISION_FLOOR) < 1e-6
+    return (
+        abs(float(ppm_scale) - PPM_SCALE) < 1e-6
+        and abs(float(ppm_floor) - MZ_PRECISION_FLOOR) < 1e-6
+    )
 
 
 def _serialize_ppm_for_query(ppm_scale, ppm_floor):
@@ -473,7 +624,11 @@ def _build_score_weight_controls():
         control_columns.append(
             dbc.Col(
                 [
-                    dbc.Label(control["label"], html_for=control["id"], className="small fw-semibold text-uppercase text-muted mb-1"),
+                    dbc.Label(
+                        control["label"],
+                        html_for=control["id"],
+                        className="small fw-semibold text-uppercase text-muted mb-1",
+                    ),
                     dbc.InputGroup(
                         [
                             dbc.Input(
@@ -546,7 +701,12 @@ def _build_score_weight_controls():
                     html.Div(
                         [
                             html.Span("Score weight tuning", className="fw-semibold"),
-                            dbc.Badge("Dev only", color="warning", text_color="dark", className="ms-2"),
+                            dbc.Badge(
+                                "Dev only",
+                                color="warning",
+                                text_color="dark",
+                                className="ms-2",
+                            ),
                         ],
                         className="d-flex align-items-center flex-wrap",
                     ),
@@ -558,7 +718,10 @@ def _build_score_weight_controls():
             ),
             dbc.Row(control_columns, className="g-3 mt-1"),
             html.Hr(className="my-2", style={"borderColor": "rgba(0,0,0,0.08)"}),
-            html.Small("PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.", className="text-muted"),
+            html.Small(
+                "PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.",
+                className="text-muted",
+            ),
             ppm_row,
         ],
         className="mt-3 p-3 border rounded-4",
@@ -576,7 +739,9 @@ def _parse_dashboard_query(search):
     except Exception:
         query_dict = {}
 
-    workflow_choice = _get_url_param(query_dict, "workflow", "auto").strip().lower() or "auto"
+    workflow_choice = (
+        _get_url_param(query_dict, "workflow", "auto").strip().lower() or "auto"
+    )
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
 
@@ -621,29 +786,49 @@ CONTROLS_CARD = dbc.Card(
                 [
                     dbc.Col(
                         [
-                            dbc.Label("Task ID", html_for="task-id", className="small fw-semibold text-uppercase text-muted mb-1"),
+                            dbc.Label(
+                                "Task ID",
+                                html_for="task-id",
+                                className="small fw-semibold text-uppercase text-muted mb-1",
+                            ),
                             dbc.Input(
                                 id="task-id",
                                 placeholder="Enter FBMN, Classical Networking, or Library Search task ID",
                                 value="",
-                                style={"borderRadius": "10px", "borderColor": "rgba(0,0,0,0.12)"},
+                                style={
+                                    "borderRadius": "10px",
+                                    "borderColor": "rgba(0,0,0,0.12)",
+                                },
                             ),
                         ],
                         md=6,
                     ),
                     dbc.Col(
                         [
-                            dbc.Label("Workflow", html_for="workflow-choice", className="small fw-semibold text-uppercase text-muted mb-1"),
+                            dbc.Label(
+                                "Workflow",
+                                html_for="workflow-choice",
+                                className="small fw-semibold text-uppercase text-muted mb-1",
+                            ),
                             dbc.Select(
                                 id="workflow-choice",
                                 options=[
                                     {"label": "Auto-detect", "value": "auto"},
-                                    {"label": "Classical Networking", "value": "classic"},
+                                    {
+                                        "label": "Classical Networking",
+                                        "value": "classic",
+                                    },
                                     {"label": "FBMN", "value": "fbmn"},
-                                    {"label": "Library Search", "value": "librarysearch"},
+                                    {
+                                        "label": "Library Search",
+                                        "value": "librarysearch",
+                                    },
                                 ],
                                 value="auto",
-                                style={"borderRadius": "10px", "borderColor": "rgba(0,0,0,0.12)"},
+                                style={
+                                    "borderRadius": "10px",
+                                    "borderColor": "rgba(0,0,0,0.12)",
+                                },
                             ),
                         ],
                         md=4,
@@ -661,7 +846,11 @@ CONTROLS_CARD = dbc.Card(
                         id="run-analysis",
                         color="primary",
                         n_clicks=0,
-                        style={"borderRadius": "999px", "paddingLeft": "1.5rem", "paddingRight": "1.5rem"},
+                        style={
+                            "borderRadius": "999px",
+                            "paddingLeft": "1.5rem",
+                            "paddingRight": "1.5rem",
+                        },
                     ),
                     dbc.Button(
                         "How does scoring work?",
@@ -691,54 +880,75 @@ INFO_MODAL = dbc.Modal(
                     "The evidence score (0–100) is computed per scan from five weighted signals, then multiplied by an m/z precision factor.",
                     className="text-muted",
                 ),
-                html.H6("Score components (default weights)", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                html.H6(
+                    "Score components (default weights)",
+                    className="mt-3 mb-2 small fw-semibold text-uppercase text-muted",
+                ),
                 dbc.ListGroup(
                     [
-                        dbc.ListGroupItem([
-                            html.Strong("~45% "), "Structure agreement",
-                            html.Br(),
-                            html.Small(
-                                "Supporting hits ÷ total hits. Hits are grouped by planar InChIKey (stereo ignored) and positional-isomer family (Murcko scaffold + molecular formula). Higher fractions mean multiple independent library entries agree on the same annotation.",
-                                className="text-muted",
-                            ),
-                        ]),
-                        dbc.ListGroupItem([
-                            html.Strong("~14% "), "Tanimoto structural diversity (WCRS)",
-                            html.Br(),
-                            html.Small(
-                                "WCRS (Weighted Centroid Representativeness Score) picks the most representative annotation group using ECFP4 fingerprints (Morgan r=2, 2048-bit). The reported score is d̄ᵢ — the weighted average pairwise Tanimoto similarity from the winner to all other evidence groups. Falls back to structure agreement when fewer than 2 unique valid SMILES are available.",
-                                className="text-muted",
-                            ),
-                        ]),
-                        dbc.ListGroupItem([
-                            html.Strong("~23% "), "Spectral reproducibility (cosine consistency)",
-                            html.Br(),
-                            html.Small(
-                                "1 − clamp(std/mean, 0, 1) of MQScores (cosine similarities) within the winning support group. Measures how consistently the spectrum matches independent library entries — a score of 1.0 means all cosines are identical, 0.0 means maximal spread. Single-hit groups default to 1.0.",
-                                className="text-muted",
-                            ),
-                        ]),
-                        dbc.ListGroupItem([
-                            html.Strong("~9% "), "Best cosine score",
-                            html.Br(),
-                            html.Small(
-                                "The maximum MQScore (cosine similarity) observed across all library hits for this scan. Reflects the quality of the best individual spectral match.",
-                                className="text-muted",
-                            ),
-                        ]),
-                        dbc.ListGroupItem([
-                            html.Strong("~9% "), "Shared peaks",
-                            html.Br(),
-                            html.Small(
-                                "Soft-normalised mean fragment-ion overlap: x / (x + 5). Counts fragment ions matched between the query spectrum and library hits in the winning group. Penalises scans with very few shared peaks, even when cosine is high.",
-                                className="text-muted",
-                            ),
-                        ]),
+                        dbc.ListGroupItem(
+                            [
+                                html.Strong("~45% "),
+                                "Structure agreement",
+                                html.Br(),
+                                html.Small(
+                                    "Supporting hits ÷ total hits. Hits are grouped by planar InChIKey (stereo ignored) and positional-isomer family (Murcko scaffold + molecular formula). Higher fractions mean multiple independent library entries agree on the same annotation.",
+                                    className="text-muted",
+                                ),
+                            ]
+                        ),
+                        dbc.ListGroupItem(
+                            [
+                                html.Strong("~14% "),
+                                "Tanimoto structural diversity (WCRS)",
+                                html.Br(),
+                                html.Small(
+                                    "WCRS (Weighted Centroid Representativeness Score) picks the most representative annotation group using ECFP4 fingerprints (Morgan r=2, 2048-bit). The reported score is d̄ᵢ — the weighted average pairwise Tanimoto similarity from the winner to all other evidence groups. Falls back to structure agreement when fewer than 2 unique valid SMILES are available.",
+                                    className="text-muted",
+                                ),
+                            ]
+                        ),
+                        dbc.ListGroupItem(
+                            [
+                                html.Strong("~23% "),
+                                "Spectral reproducibility (cosine consistency)",
+                                html.Br(),
+                                html.Small(
+                                    "1 − clamp(std/mean, 0, 1) of MQScores (cosine similarities) within the winning support group. Measures how consistently the spectrum matches independent library entries — a score of 1.0 means all cosines are identical, 0.0 means maximal spread. Single-hit groups default to 1.0.",
+                                    className="text-muted",
+                                ),
+                            ]
+                        ),
+                        dbc.ListGroupItem(
+                            [
+                                html.Strong("~9% "),
+                                "Best cosine score",
+                                html.Br(),
+                                html.Small(
+                                    "The maximum MQScore (cosine similarity) observed across all library hits for this scan. Reflects the quality of the best individual spectral match.",
+                                    className="text-muted",
+                                ),
+                            ]
+                        ),
+                        dbc.ListGroupItem(
+                            [
+                                html.Strong("~9% "),
+                                "Shared peaks",
+                                html.Br(),
+                                html.Small(
+                                    "Soft-normalised mean fragment-ion overlap: x / (x + 5). Counts fragment ions matched between the query spectrum and library hits in the winning group. Penalises scans with very few shared peaks, even when cosine is high.",
+                                    className="text-muted",
+                                ),
+                            ]
+                        ),
                     ],
                     flush=True,
                     className="mb-3",
                 ),
-                html.H6("m/z precision multiplier", className="mt-3 mb-2 small fw-semibold text-uppercase text-muted"),
+                html.H6(
+                    "m/z precision multiplier",
+                    className="mt-3 mb-2 small fw-semibold text-uppercase text-muted",
+                ),
                 html.P(
                     [
                         "The weighted sum is multiplied by ",
@@ -754,13 +964,15 @@ INFO_MODAL = dbc.Modal(
                     color="light",
                     className="mb-2 py-2 small border",
                 ),
-                dbc.Alert(
-                    "Dev note: the local dashboard can override these defaults with the score-weight tuning controls.",
-                    color="warning",
-                    className="mb-2 py-2 small",
-                )
-                if ENABLE_DEV_SCORE_WEIGHT_CONTROLS
-                else None,
+                (
+                    dbc.Alert(
+                        "Dev note: the local dashboard can override these defaults with the score-weight tuning controls.",
+                        color="warning",
+                        className="mb-2 py-2 small",
+                    )
+                    if ENABLE_DEV_SCORE_WEIGHT_CONTROLS
+                    else None
+                ),
                 dbc.Alert(
                     "Stereochemistry is ignored — planar InChIKey connectivity (or fallbacks) is used for structure grouping.",
                     color="info",
@@ -774,7 +986,13 @@ INFO_MODAL = dbc.Modal(
             ]
         ),
         dbc.ModalFooter(
-            dbc.Button("Close", id="close-info-modal", color="secondary", outline=True, size="sm")
+            dbc.Button(
+                "Close",
+                id="close-info-modal",
+                color="secondary",
+                outline=True,
+                size="sm",
+            )
         ),
     ],
     id="info-modal",
@@ -841,7 +1059,10 @@ BODY = dbc.Container(
                                 ]
                             ),
                             className="border-0 shadow-sm",
-                            style={"borderRadius": "14px", "background": "rgba(255,255,255,0.9)"},
+                            style={
+                                "borderRadius": "14px",
+                                "background": "rgba(255,255,255,0.9)",
+                            },
                         ),
                         id="pubchem-controls",
                         style={"display": "none"},
@@ -914,13 +1135,15 @@ dash_app.layout = html.Div([NAVBAR, BODY])
 )
 def determine_task_from_url(search):
     query_state = _parse_dashboard_query(search)
-    score_weight_inputs = _score_weight_inputs_from_weights(query_state["score_weights"])
+    score_weight_inputs = _score_weight_inputs_from_weights(
+        query_state["score_weights"]
+    )
     return (
         query_state["task_id"],
         query_state["workflow_choice"],
         score_weight_inputs["structure_agreement"],
         score_weight_inputs["tanimoto"],
-        score_weight_inputs["spectral_similarity"],
+        score_weight_inputs["cosine_consistency"],
         score_weight_inputs["max_cosine"],
         score_weight_inputs["shared_peaks"],
         query_state["ppm_scale"],
@@ -962,14 +1185,20 @@ def render_detail_panel(search):
     ppm_floor = query_state["ppm_floor"]
 
     if not task_id or not scan:
-        return dbc.Alert("Detail view requires task and scan query parameters.", color="warning"), html.Div(), html.Div(), None
+        return (
+            dbc.Alert(
+                "Detail view requires task and scan query parameters.", color="warning"
+            ),
+            html.Div(),
+            html.Div(),
+            None,
+        )
 
     try:
         panel_ui, compounds_data = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
-            use_entropy_similarity=False,
             score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
             ppm_scale=ppm_scale,
@@ -979,16 +1208,21 @@ def render_detail_panel(search):
         score_panel = children[0] if len(children) > 0 else html.Div()
         compounds_panel = html.Div(children[1:3]) if len(children) > 1 else html.Div()
         masst_panel = children[3] if len(children) > 3 else html.Div()
-        return score_panel, compounds_panel, masst_panel, {
-            "compounds": compounds_data,
-            "task_id": task_id,
-            "scan": scan,
-            "workflow_choice": workflow_choice,
-            "score_weights": score_weights,
-            "ppm_scale": ppm_scale,
-            "ppm_floor": ppm_floor,
-            "precomputed_query_entropy": precomputed_query_entropy,
-        }
+        return (
+            score_panel,
+            compounds_panel,
+            masst_panel,
+            {
+                "compounds": compounds_data,
+                "task_id": task_id,
+                "scan": scan,
+                "workflow_choice": workflow_choice,
+                "score_weights": score_weights,
+                "ppm_scale": ppm_scale,
+                "ppm_floor": ppm_floor,
+                "precomputed_query_entropy": precomputed_query_entropy,
+            },
+        )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None
 
@@ -1012,10 +1246,16 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
 
     task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
-    workflow_choice = _truncate_text(str(scan_data.get("workflow_choice", "auto")), max_length=40)
+    workflow_choice = _truncate_text(
+        str(scan_data.get("workflow_choice", "auto")), max_length=40
+    )
     score_weights = _normalize_score_weights(scan_data.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(scan_data.get("ppm_scale"), scan_data.get("ppm_floor"))
-    use_pubchem_for_score = isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
+        scan_data.get("ppm_scale"), scan_data.get("ppm_floor")
+    )
+    use_pubchem_for_score = (
+        isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    )
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
     if not task_id or not scan:
@@ -1026,7 +1266,6 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             task_id,
             scan,
             workflow_choice,
-            use_entropy_similarity=False,
             score_weights=score_weights,
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
@@ -1086,7 +1325,11 @@ def load_library_matches_callback(
 ):
     """Stage 1 — fetch library matches and report what was found."""
     query_state = _parse_dashboard_query(search)
-    should_autorun = bool(query_state["task_id"]) and not query_state["detail_mode"] and (_n_clicks or 0) < 1
+    should_autorun = (
+        bool(query_state["task_id"])
+        and not query_state["detail_mode"]
+        and (_n_clicks or 0) < 1
+    )
 
     if should_autorun:
         task_id = query_state["task_id"]
@@ -1131,14 +1374,24 @@ def load_library_matches_callback(
                 html.Div(
                     [
                         dbc.Badge("Loading", color="primary", className="me-2"),
-                        html.Span("Preparing scan-level confidence summary", className="fw-semibold"),
+                        html.Span(
+                            "Preparing scan-level confidence summary",
+                            className="fw-semibold",
+                        ),
                     ],
                     className="d-flex align-items-center mb-2",
                 ),
                 html.Div(
                     [
-                        dbc.Badge(f"{n_matches:,} matches", color="light", text_color="dark", className="me-2"),
-                        dbc.Badge(f"{n_scans:,} scans", color="light", text_color="dark"),
+                        dbc.Badge(
+                            f"{n_matches:,} matches",
+                            color="light",
+                            text_color="dark",
+                            className="me-2",
+                        ),
+                        dbc.Badge(
+                            f"{n_scans:,} scans", color="light", text_color="dark"
+                        ),
                     ],
                     className="mb-2",
                 ),
@@ -1191,7 +1444,9 @@ def compute_and_render_scores(matches_json, params):
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_scale"), params.get("ppm_floor")
+    )
     task_info = params.get("task_info") or {}
     custom_score_weights_active = not _score_weights_are_default(score_weights)
     score_weight_query_suffix = _serialize_score_weights_for_query(score_weights)
@@ -1200,22 +1455,34 @@ def compute_and_render_scores(matches_json, params):
     try:
         score_weights_tuple = tuple(sorted(score_weights.items()))
         summary_json = _compute_scores_cached(
-            task_id, workflow_choice, resolved_workflow, score_weights_tuple,
-            ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
+            task_id,
+            workflow_choice,
+            resolved_workflow,
+            score_weights_tuple,
+            ppm_scale=ppm_scale,
+            mz_precision_floor=ppm_floor,
         )
         if summary_json is None:
-            return dbc.Alert("No library matches were found for this task.", color="warning")
+            return dbc.Alert(
+                "No library matches were found for this task.", color="warning"
+            )
         summary_df = pd.read_json(io.StringIO(summary_json), orient="split")
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
 
     if len(summary_df) == 0:
-        return dbc.Alert("No library matches were found for this task.", color="warning")
+        return dbc.Alert(
+            "No library matches were found for this task.", color="warning"
+        )
 
     badge_counts = {
-        "Consistent evidence": int((summary_df["confidence_label"] == "Consistent evidence").sum()),
+        "Consistent evidence": int(
+            (summary_df["confidence_label"] == "Consistent evidence").sum()
+        ),
         "Inconclusive": int((summary_df["confidence_label"] == "Inconclusive").sum()),
-        "Inconsistent evidence": int((summary_df["confidence_label"] == "Inconsistent evidence").sum()),
+        "Inconsistent evidence": int(
+            (summary_df["confidence_label"] == "Inconsistent evidence").sum()
+        ),
     }
     task_metadata_details = _build_task_metadata_details(task_info, resolved_workflow)
 
@@ -1225,7 +1492,9 @@ def compute_and_render_scores(matches_json, params):
         / (table_df["total_matches"].astype(float) + LAPLACE_BETA)
     ).round(3)
     table_df["support"] = (
-        table_df["supporting_matches"].astype(str) + " / " + table_df["total_matches"].astype(str)
+        table_df["supporting_matches"].astype(str)
+        + " / "
+        + table_df["total_matches"].astype(str)
     )
 
     _sk_counts = table_df["structure_key"].value_counts()
@@ -1239,14 +1508,20 @@ def compute_and_render_scores(matches_json, params):
             f"{score_weight_query_suffix}"
             f"{ppm_query_suffix}"
             f"&scan={urllib.parse.quote(str(row['scan']))}"
-            + (f"&qe={row['query_entropy']}" if row.get("query_entropy") is not None else "")
+            + (
+                f"&qe={row['query_entropy']}"
+                if row.get("query_entropy") is not None
+                else ""
+            )
             + "&detail=1)"
         ),
         axis=1,
     )
     table_df = table_df[[col["field"] for col in _SUMMARY_COLUMN_DEFS]]
 
-    initial_visible = {col["field"] for col in _SUMMARY_COLUMN_DEFS} - _DEFAULT_HIDDEN_FIELDS
+    initial_visible = {
+        col["field"] for col in _SUMMARY_COLUMN_DEFS
+    } - _DEFAULT_HIDDEN_FIELDS
     initial_col_defs = [
         {**col, "hide": col["field"] not in initial_visible}
         for col in _SUMMARY_COLUMN_DEFS
@@ -1304,14 +1579,16 @@ def compute_and_render_scores(matches_json, params):
                                 className="text-muted d-block mb-2",
                             ),
                             task_metadata_details,
-                            dbc.Badge(
-                                "Custom score weights active",
-                                color="warning",
-                                text_color="dark",
-                                className="me-2",
-                            )
-                            if custom_score_weights_active
-                            else None,
+                            (
+                                dbc.Badge(
+                                    "Custom score weights active",
+                                    color="warning",
+                                    text_color="dark",
+                                    className="me-2",
+                                )
+                                if custom_score_weights_active
+                                else None
+                            ),
                             dbc.Badge(
                                 f"Consistent evidence: {badge_counts['Consistent evidence']}",
                                 color="success",
@@ -1359,7 +1636,14 @@ def compute_and_render_scores(matches_json, params):
                                                     children=dbc.Checklist(
                                                         id="column-visibility-checklist",
                                                         options=[
-                                                            {"label": col["headerName"].split("(")[0].strip(), "value": col["field"]}
+                                                            {
+                                                                "label": col[
+                                                                    "headerName"
+                                                                ]
+                                                                .split("(")[0]
+                                                                .strip(),
+                                                                "value": col["field"],
+                                                            }
                                                             for col in _SUMMARY_COLUMN_DEFS
                                                         ],
                                                         value=list(initial_visible),
@@ -1396,7 +1680,9 @@ def compute_and_render_scores(matches_json, params):
 def update_column_visibility(visible_fields):
     """Show/hide columns in the summary table based on the toggle checklist."""
     visible = set(visible_fields or [])
-    return [{**col, "hide": col["field"] not in visible} for col in _SUMMARY_COLUMN_DEFS]
+    return [
+        {**col, "hide": col["field"] not in visible} for col in _SUMMARY_COLUMN_DEFS
+    ]
 
 
 @dash_app.callback(
@@ -1413,14 +1699,20 @@ def download_summary_csv(n_clicks, matches_json, params):
     task_id = params.get("task_id", "unknown")
     resolved_workflow = params.get("resolved_workflow", "auto")
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(params.get("ppm_scale"), params.get("ppm_floor"))
+    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_scale"), params.get("ppm_floor")
+    )
 
     try:
         workflow_choice = params.get("workflow_choice", "auto")
         score_weights_tuple = tuple(sorted(score_weights.items()))
         summary_json = _compute_scores_cached(
-            task_id, workflow_choice, resolved_workflow, score_weights_tuple,
-            ppm_scale=ppm_scale, mz_precision_floor=ppm_floor,
+            task_id,
+            workflow_choice,
+            resolved_workflow,
+            score_weights_tuple,
+            ppm_scale=ppm_scale,
+            mz_precision_floor=ppm_floor,
         )
         if summary_json is None:
             return no_update
@@ -1501,7 +1793,11 @@ def search_pubchem_for_card(n_clicks, manual_name_query, compound_info):
 
         matched_name = _truncate_text(c.get("matched_name", ""), max_length=30)
         source_label = c.get("source", "name")
-        query_note = f" | query: {matched_name}" if source_label == "name-fuzzy" and matched_name else ""
+        query_note = (
+            f" | query: {matched_name}"
+            if source_label == "name-fuzzy" and matched_name
+            else ""
+        )
         dropdown_options.append(
             {
                 "label": (
@@ -1615,12 +1911,18 @@ def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
                     [
                         html.Img(
                             src=image_url,
-                            style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                            style={
+                                "width": "180px",
+                                "height": "180px",
+                                "objectFit": "contain",
+                            },
                         ),
                         html.Small(
-                            "Structure from selected PubChem match"
-                            if selected_smiles
-                            else "Structure from library/InChI",
+                            (
+                                "Structure from selected PubChem match"
+                                if selected_smiles
+                                else "Structure from library/InChI"
+                            ),
                             className="text-muted d-block",
                         ),
                     ]
@@ -1661,7 +1963,9 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
     if not scan_data:
         return html.Div()
 
-    use_selected_pubchem = isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    use_selected_pubchem = (
+        isinstance(pubchem_value, list) and "enabled" in pubchem_value
+    )
     overrides = overrides or {}
 
     # Apply per-card overrides only when the toggle is enabled.
@@ -1687,14 +1991,20 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
     fig = _build_tanimoto_heatmap_figure(compounds_data, use_pubchem=False)
 
     if fig is None:
-        return dbc.Alert("RDKit/Plotly unavailable — cannot build Tanimoto heatmap.", color="warning")
+        return dbc.Alert(
+            "RDKit/Plotly unavailable — cannot build Tanimoto heatmap.", color="warning"
+        )
 
     n_missing = sum(1 for c in compounds_data if not c.get("smiles"))
 
     if applied_overrides:
-        source_note = f"{applied_overrides} structure(s) updated via selected PubChem SMILES."
+        source_note = (
+            f"{applied_overrides} structure(s) updated via selected PubChem SMILES."
+        )
     elif overrides and not use_selected_pubchem:
-        source_note = "PubChem selections are available but currently disabled by the toggle."
+        source_note = (
+            "PubChem selections are available but currently disabled by the toggle."
+        )
     elif n_missing:
         source_note = (
             f"{n_missing} compound(s) have no SMILES — cells are blank. "
@@ -1724,13 +2034,21 @@ def render_tanimoto_heatmap(scan_data, overrides, pubchem_value):
                             config={"displayModeBar": False},
                             style={"width": "100%"},
                         ),
-                        style={"width": "100%", "maxWidth": f"{heatmap_max_width}px", "margin": "0 auto"},
+                        style={
+                            "width": "100%",
+                            "maxWidth": f"{heatmap_max_width}px",
+                            "margin": "0 auto",
+                        },
                     ),
                 ]
             ),
         ],
         className="mb-3",
-        style={"width": "100%", "maxWidth": f"{heatmap_max_width}px", "margin": "0 auto"},
+        style={
+            "width": "100%",
+            "maxWidth": f"{heatmap_max_width}px",
+            "margin": "0 auto",
+        },
     )
 
 

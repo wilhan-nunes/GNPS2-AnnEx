@@ -10,9 +10,9 @@ from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
     _canonical_structure_key,
+    _clean_compound_name,
     _find_first_column,
     _infer_resolved_workflow,
-    _normalize_library_usi,
     _to_text,
 )
 from .tanimoto import _canonical_smiles, compute_cross_group_tanimoto, scan_tanimoto
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SCORE_WEIGHTS = {
     "structure_agreement": 50 / 110,
     "tanimoto": 15 / 110,
-    "spectral_similarity": 25 / 110,
+    "cosine_consistency": 25 / 110,
     "max_cosine": 10 / 110,
     "shared_peaks": 10 / 110,
 }
@@ -69,7 +69,7 @@ def _normalize_score_weights(score_weights=None):
 def _compute_confidence_score(
     support_fraction,
     tanimoto_score,
-    spectral_similarity,
+    cosine_consistency,
     max_cosine,
     shared_peaks_score=0.0,
     score_weights=None,
@@ -78,51 +78,13 @@ def _compute_confidence_score(
     confidence_score = 100.0 * (
         normalized_score_weights["structure_agreement"] * float(support_fraction)
         + normalized_score_weights["tanimoto"] * float(tanimoto_score)
-        + normalized_score_weights["spectral_similarity"] * float(spectral_similarity)
+        + normalized_score_weights["cosine_consistency"] * float(cosine_consistency)
         + normalized_score_weights["max_cosine"] * float(max_cosine)
         + normalized_score_weights.get("shared_peaks", 0.0) * float(shared_peaks_score)
     )
     return min(100.0, max(0.0, confidence_score))
 
 
-
-@lru_cache(maxsize=4096)
-def _get_entropy_similarity_from_usis(query_usi, library_usi):
-    query_usi = _to_text(query_usi)
-    library_usi = _normalize_library_usi(library_usi)
-    if not query_usi or not library_usi:
-        return None
-
-    try:
-        from .spectral_entropy_v2 import (
-            DEFAULT_MAX_PEAK_NUM,
-            DEFAULT_MS2_TOLERANCE_DA,
-            DEFAULT_NOISE_THRESHOLD,
-            entropy_similarity_pair,
-            fetch_spectrum,
-        )
-    except Exception:
-        logger.exception("Failed to import spectral_entropy_v2")
-        return None
-
-    try:
-        query_spec = fetch_spectrum(query_usi, timeout=ENTROPY_USI_TIMEOUT_SEC)
-        library_spec = fetch_spectrum(library_usi, timeout=ENTROPY_USI_TIMEOUT_SEC)
-        similarity_payload = entropy_similarity_pair(
-            query_spec.get("peaks", []),
-            library_spec.get("peaks", []),
-            ms2_tolerance_da=DEFAULT_MS2_TOLERANCE_DA,
-            noise_threshold=DEFAULT_NOISE_THRESHOLD,
-            max_peak_num=DEFAULT_MAX_PEAK_NUM,
-        )
-        entropy_similarity = similarity_payload.get("entropy_similarity")
-        if entropy_similarity is None:
-            return None
-        entropy_similarity = float(entropy_similarity)
-        return max(0.0, min(1.0, entropy_similarity))
-    except Exception:
-        logger.warning("Entropy similarity failed for query=%s library=%s", query_usi, library_usi, exc_info=True)
-        return None
 
 
 @lru_cache(maxsize=4096)
@@ -162,7 +124,6 @@ def _compute_scan_level_confidence(
     task_id="",
     workflow_choice="auto",
     scan_filter=None,
-    use_entropy_similarity=True,
     score_weights=None,
     ppm_scale=None,
     mz_precision_floor=None,
@@ -204,6 +165,7 @@ def _compute_scan_level_confidence(
         if compound_col is not None
         else "Unknown"
     )
+    work_df["_compound"] = work_df["_compound"].apply(_clean_compound_name)
     work_df["_library_usi"] = (
         work_df[library_usi_col].astype(str)
         if library_usi_col is not None
@@ -317,6 +279,12 @@ def _compute_scan_level_confidence(
         _mode = structure_hits["_compound"].mode()
         top_compound = _mode.iloc[0] if len(_mode) > 0 else ""
 
+        # Identify the hit with the globally highest cosine across ALL groups.
+        _global_best_idx = scan_df["_cosine"].idxmax()
+        _global_top_group = scan_df.at[_global_best_idx, "_support_group_key"]
+        _global_top_compound = scan_df.at[_global_best_idx, "_compound"]
+        top_cosine_overridden = bool(_global_top_group != support_group_key)
+
         support_fraction = best["count"] / total_matches if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
@@ -352,13 +320,12 @@ def _compute_scan_level_confidence(
         else:
             cv = _std_cosine / mean_cosine if mean_cosine > 0 else 1.0
             cosine_consistency = max(0.0, 1.0 - min(1.0, cv))
-        entropy_similarity = cosine_consistency
-        entropy_source = "cosine_consistency"
+        cosine_consistency_source = "cosine_consistency"
 
         confidence_score = _compute_confidence_score(
             support_fraction,
             tanimoto_score,
-            entropy_similarity,
+            cosine_consistency,
             max_cosine,
             shared_peaks_score=shared_peaks_score,
             score_weights=normalized_score_weights,
@@ -385,8 +352,8 @@ def _compute_scan_level_confidence(
                 "missing_structures": missing_structures,
                 "mean_cosine": round(mean_cosine, 4),
                 "max_cosine": round(max_cosine, 4),
-                "entropy_similarity": round(float(entropy_similarity), 4),
-                "entropy_source": entropy_source,
+                "cosine_consistency": round(float(cosine_consistency), 4),
+                "cosine_consistency_source": cosine_consistency_source,
                 "tanimoto_score": round(float(tanimoto_score), 4),
                 "tanimoto_source": tanimoto_source,
                 "shared_peaks": round(raw_shared_peaks, 2),
@@ -398,6 +365,8 @@ def _compute_scan_level_confidence(
                 "badge_color": badge_color,
                 "query_entropy": round(query_entropy, 3) if query_entropy is not None else None,
                 "query_entropy_label": query_entropy_label,
+                "top_cosine_overridden": top_cosine_overridden,
+                "top_cosine_compound": _global_top_compound,
             }
         )
 

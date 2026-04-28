@@ -245,14 +245,11 @@ def _format_workflow_label(workflow_choice):
     return workflow_label_map.get(_to_text(workflow_choice).lower(), workflow_choice)
 
 
-def _format_entropy_source_label(entropy_source):
+def _format_cosine_consistency_source_label(source):
     source_label_map = {
-        "spectral_entropy": "Spectral entropy similarity",
-        "mean_cosine_fallback": "Mean cosine fallback",
-        "disabled": "Entropy disabled; mean cosine fallback",
         "cosine_consistency": "Cosine consistency (spectral reproducibility)",
     }
-    return source_label_map.get(_to_text(entropy_source), "Similarity evidence")
+    return source_label_map.get(_to_text(source), "Similarity evidence")
 
 
 def _format_tanimoto_source_label(tanimoto_source):
@@ -360,7 +357,6 @@ def _build_reliability_breakdown_panel(
     workflow_choice,
     resolved_workflow,
     score_row,
-    use_entropy_similarity,
     score_weights=None,
 ):
     confidence_score = float(score_row["confidence_score"])
@@ -370,8 +366,8 @@ def _build_reliability_breakdown_panel(
     supporting_matches = int(score_row["supporting_matches"])
     total_matches = int(score_row["total_matches"])
     support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
-    similarity_value = float(score_row["entropy_similarity"])
-    entropy_source = _to_text(score_row["entropy_source"])
+    similarity_value = float(score_row["cosine_consistency"])
+    cosine_consistency_src = _to_text(score_row["cosine_consistency_source"])
     tanimoto_score = float(score_row["tanimoto_score"])
     tanimoto_source = _to_text(score_row["tanimoto_source"])
     max_cosine = float(score_row["max_cosine"])
@@ -385,7 +381,7 @@ def _build_reliability_breakdown_panel(
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
 
     similarity_formula = (
-        f"cosine consistency × {_format_weight_percent(normalized_score_weights['spectral_similarity'])}"
+        f"cosine consistency × {_format_weight_percent(normalized_score_weights['cosine_consistency'])}"
     )
     similarity_secondary = (
         f"1 − (std/mean) of cosines across {supporting_matches} supporting hits; "
@@ -437,9 +433,9 @@ def _build_reliability_breakdown_panel(
         {
             "label": "Spectral reproducibility",
             "formula": similarity_formula,
-            "weight": normalized_score_weights["spectral_similarity"],
+            "weight": normalized_score_weights["cosine_consistency"],
             "value": similarity_value,
-            "raw_primary": f"{similarity_value:.4f} · {_format_entropy_source_label(entropy_source).lower()}",
+            "raw_primary": f"{similarity_value:.4f} · {_format_cosine_consistency_source_label(cosine_consistency_src).lower()}",
             "raw_secondary": similarity_secondary,
         },
         {
@@ -626,7 +622,6 @@ def _build_reliability_breakdown_panel(
                     href=(
                         f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
                         f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-                        f"&entropy={'1' if use_entropy_similarity else '0'}"
                     ),
                     className="detail-back-link",
                 ),
@@ -1137,7 +1132,6 @@ def _build_detail_panel(
     task_id,
     scan,
     workflow_choice,
-    use_entropy_similarity=True,
     score_weights=None,
     pubchem_overrides=None,
     use_pubchem_for_score=False,
@@ -1153,7 +1147,6 @@ def _build_detail_panel(
         task_id=task_id,
         workflow_choice=resolved_workflow,
         scan_filter=scan,
-        use_entropy_similarity=use_entropy_similarity,
         score_weights=normalized_score_weights,
         ppm_scale=ppm_scale,
         mz_precision_floor=mz_precision_floor,
@@ -1507,12 +1500,12 @@ def _build_detail_panel(
             elif tanimoto_source == "single_structure":
                 tanimoto_source = "single_structure_pubchem"
 
-            entropy_similarity = float(score_row_for_panel["entropy_similarity"])
+            cosine_consistency_val = float(score_row_for_panel["cosine_consistency"])
             max_cosine = float(score_row_for_panel["max_cosine"])
             confidence_score = _compute_confidence_score(
                 support_fraction,
                 float(tanimoto_score),
-                entropy_similarity,
+                cosine_consistency_val,
                 max_cosine,
                 score_weights=normalized_score_weights,
             )
@@ -1530,7 +1523,6 @@ def _build_detail_panel(
         workflow_choice,
         resolved_workflow,
         score_row_for_panel,
-        use_entropy_similarity,
         score_weights=normalized_score_weights,
     )
 
