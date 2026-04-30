@@ -37,6 +37,34 @@ from bin.tanimoto import _smiles_to_morgan_fp, scan_tanimoto
 logger = logging.getLogger(__name__)
 
 
+_NET_SPINNER_HTML = """
+<div class="spinner-wrap">
+  <div class="ln-loader ln-hub-chase">
+    <svg viewBox="0 0 200 200" fill="white" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="100" cy="100" r="82" class="ln-hc-ring"/>
+      <line x1="100" y1="100" x2="106" y2="58"  class="ln-hc-spoke ln-hc-sp1"/>
+      <line x1="100" y1="100" x2="145" y2="94"  class="ln-hc-spoke ln-hc-sp2"/>
+      <line x1="100" y1="100" x2="138" y2="142" class="ln-hc-spoke ln-hc-sp3"/>
+      <line x1="100" y1="100" x2="58"  y2="140" class="ln-hc-spoke ln-hc-sp4"/>
+      <circle cx="106" cy="58"  r="10" class="ln-hc-sat ln-hc-sat1"/>
+      <circle cx="145" cy="94"  r="10" class="ln-hc-sat ln-hc-sat2"/>
+      <circle cx="138" cy="142" r="10" class="ln-hc-sat ln-hc-sat3"/>
+      <circle cx="58"  cy="140" r="10" class="ln-hc-sat ln-hc-sat4"/>
+      <circle cx="100" cy="100" r="18" class="ln-hc-core"/>
+    </svg>
+  </div>
+  <span class="spinner-label">{label}</span>
+</div>
+"""
+
+
+def _net_spinner(label="loading"):
+    return dcc.Markdown(
+        _NET_SPINNER_HTML.format(label=label),
+        dangerously_allow_html=True,
+    )
+
+
 def _search_pubchem_candidates(inchikey: str, name: str, max_results: int = 8) -> list:
     """
     Search PubChem for compound candidates.

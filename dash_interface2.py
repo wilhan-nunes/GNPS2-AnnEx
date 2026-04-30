@@ -13,6 +13,7 @@ from components import (
     _build_detail_panel,
     _build_tanimoto_heatmap_figure,
     _format_workflow_label,
+    _net_spinner,
     _render_mol_png_data_uri,
     _search_pubchem_candidates,
 )
@@ -1020,13 +1021,17 @@ BODY = dbc.Container(
         dbc.Row(
             [
                 dbc.Col(
-                    html.Div(
-                        [
-                            html.Div(id="detail-score-panel"),
-                            html.Div(id="detail-compounds-panel"),
-                            html.Div(id="detail-masst-panel"),
-                        ],
-                        id="detail-panel",
+                    dcc.Loading(
+                        id="loading-detail-panel",
+                        custom_spinner=_net_spinner("loading detail view"),
+                        children=html.Div(
+                            [
+                                html.Div(id="detail-score-panel"),
+                                html.Div(id="detail-compounds-panel"),
+                                html.Div(id="detail-masst-panel"),
+                            ],
+                            id="detail-panel",
+                        ),
                     ),
                     md=12,
                 ),
@@ -1077,7 +1082,7 @@ BODY = dbc.Container(
                 dbc.Col(
                     dcc.Loading(
                         id="loading-heatmap",
-                        type="dot",
+                        custom_spinner=_net_spinner("building heatmap"),
                         children=html.Div(id="heatmap-panel"),
                     ),
                     md=12,
@@ -1090,7 +1095,7 @@ BODY = dbc.Container(
                 dbc.Col(
                     dcc.Loading(
                         id="loading-status",
-                        type="dot",
+                        custom_spinner=_net_spinner("fetching matches"),
                         children=html.Div(id="load-status"),
                     ),
                     md=12,
@@ -1103,7 +1108,7 @@ BODY = dbc.Container(
                 dbc.Col(
                     dcc.Loading(
                         id="loading-output",
-                        type="default",
+                        custom_spinner=_net_spinner("scoring annotations"),
                         children=html.Div(id="results-panel"),
                     ),
                     md=12,
@@ -1941,10 +1946,10 @@ def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
 
 @dash_app.callback(
     Output("pubchem-controls", "style"),
-    [Input("url", "search")],
+    [Input("scan-data-store", "data")],
 )
-def toggle_pubchem_controls(search):
-    if _parse_dashboard_query(search)["detail_mode"]:
+def toggle_pubchem_controls(scan_data):
+    if scan_data:
         return {"display": "block"}
     return {"display": "none"}
 
