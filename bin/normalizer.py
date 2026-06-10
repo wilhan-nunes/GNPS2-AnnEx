@@ -22,6 +22,13 @@ def _clean_compound_name(name: str) -> str:
         return name
     name = name.strip()
 
+    # Acyl-lipid candidate annotations are not compound names.
+    if re.match(r"^Candidate\s+\S+.*\(delta\s+mass:[^)]*\)", name, re.IGNORECASE):
+        return ""
+
+    # Strip parenthetical isomer-count notes injected by some workflows.
+    name = re.sub(r"\s*\(known structural isomers:[^)]*\)", "", name, flags=re.IGNORECASE)
+
     # matchms: _remove_parts_by_regular_expression
     name = re.split(r"[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,5}_[A-Z,0-9]{4,15}_", name)[-1]
     name = re.split(r"[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,3}\!", name)[-1]
@@ -35,6 +42,9 @@ def _clean_compound_name(name: str) -> str:
     name = re.split(r"_((HCD)|(CID))[0-9]{2}_[0-9]{5,6}$", name)[0]
     name = re.split(r"(?: - )?[0-9]+(?:\.[0-9]+)? ?[eE][Vv](?: Unknown)?$", name)[0]
 
+    # Strip "CollisionEnergy:XXXXXX" suffix used by CMMC and some GNPS2 libraries.
+    name = re.sub(r"\s*CollisionEnergy:\d+\s*$", "", name, flags=re.IGNORECASE)
+
     # matchms: _remove_known_non_compound_parts
     for part in ["Spectral Match to", "from NIST14", "Massbank:"]:
         name = name.replace(part, "")
@@ -45,7 +55,13 @@ def _clean_compound_name(name: str) -> str:
     if re.search(r"^[0-9]{2,4}\.[0-9]$", end):
         name = name[: -len(end)].strip()
 
-    return name.strip()
+    name = name.strip()
+
+    # Bare CAS registry numbers (e.g. "56546-36-2") are not compound names.
+    if re.fullmatch(r"\d{2,7}-\d{2}-\d", name):
+        return ""
+
+    return name
 
 
 def _to_text(value):
@@ -216,8 +232,9 @@ def _build_positional_isomer_group_key(inchi="", smiles=""):
                         sidechain_fragments.append(_canonicalize_fragment_smiles(fragment))
 
             if scaffold_smiles:
+                scaffold_formula = rdMolDescriptors.CalcMolFormula(scaffold)
                 fragment_key = "|".join(sorted(sidechain_fragments))
-                return f"POSISO|{formula}|{scaffold_smiles}|{fragment_key}"
+                return f"POSISO|{formula}|{scaffold_formula}|{fragment_key}"
         except Exception:
             pass
 

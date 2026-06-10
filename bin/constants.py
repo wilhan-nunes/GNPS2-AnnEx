@@ -12,3 +12,6 @@ K_SHARED_PEAKS = 5
 # MZ_PRECISION_FLOOR prevents over-penalising low-resolution instruments.
 PPM_SCALE = 10.0
 MZ_PRECISION_FLOOR = 0.5
+
+# Library diversity soft-cap: min(unique_source_libraries, K) / K → [0, 1].
+K_LIBRARY_DIVERSITY = 5

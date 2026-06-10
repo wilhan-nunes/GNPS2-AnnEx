@@ -11,6 +11,7 @@ API call (~0.3 s each) per scored scan.
 Public API
 ----------
 get_query_entropy_from_mgf(task_id, scan) → (S, label) | None
+get_query_peak_count_from_mgf(task_id, scan) → int | None
 """
 
 import logging
@@ -190,3 +191,18 @@ def get_query_entropy_from_mgf(task_id: str, scan) -> tuple | None:
     except Exception:
         logger.warning("Entropy computation failed for task %s scan %s", task_id, scan, exc_info=True)
         return None
+
+
+def get_query_peak_count_from_mgf(task_id: str, scan) -> int | None:
+    """
+    Return the number of peaks for the given scan from the task's local MGF.
+    Reuses the same lru_cached spectra dict as get_query_entropy_from_mgf — zero extra I/O.
+    Returns None if the task MGF is unavailable or the scan is not found.
+    """
+    spectra = _get_task_spectra(task_id)
+    if spectra is None:
+        return None
+    peaks = spectra.get(str(scan))
+    if peaks is None:
+        return None
+    return len(peaks)

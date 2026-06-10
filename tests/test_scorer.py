@@ -22,6 +22,9 @@ REQUIRED_COLUMNS = {
     "cosine_consistency_source",
     "median_abs_ppm_error",
     "shared_peaks_score",
+    "shared_peaks_source",
+    "query_peak_count",
+    "library_diversity_score",
 }
 
 
@@ -45,13 +48,14 @@ class TestConfidenceCategory:
 
 class TestScoreWeightHelpers:
     def test_percentage_weights_normalize_to_defaults(self):
-        # Nominal percentages 50:15:25:10:10 should normalize to DEFAULT_SCORE_WEIGHTS.
+        # Nominal percentages 45:15:25:15:5:5 should normalize to DEFAULT_SCORE_WEIGHTS.
         normalized = _normalize_score_weights({
-            "structure_agreement": 50,
+            "structure_agreement": 45,
             "tanimoto": 15,
             "cosine_consistency": 25,
-            "max_cosine": 10,
-            "shared_peaks": 10,
+            "max_cosine": 15,
+            "shared_peaks": 5,
+            "library_diversity": 5,
         })
         assert normalized == pytest.approx(DEFAULT_SCORE_WEIGHTS, rel=1e-6)
 
@@ -62,6 +66,7 @@ class TestScoreWeightHelpers:
             "cosine_consistency": 0,
             "max_cosine": 0,
             "shared_peaks": 0,
+            "library_diversity": 0,
         })
         assert normalized == pytest.approx(DEFAULT_SCORE_WEIGHTS)
 
@@ -186,13 +191,13 @@ class TestComputeScanLevelConfidence:
             mixed_structure_df,         )
         reweighted = _compute_scan_level_confidence(
             mixed_structure_df,
-
             score_weights={
-                "structure_agreement": 50,
+                "structure_agreement": 45,
                 "tanimoto": 15,
                 "cosine_consistency": 25,
-                "max_cosine": 10,
-                "shared_peaks": 10,
+                "max_cosine": 15,
+                "shared_peaks": 5,
+                "library_diversity": 5,
             },
         )
         pd.testing.assert_series_equal(
@@ -204,13 +209,13 @@ class TestComputeScanLevelConfidence:
     def test_support_only_weighting_uses_structure_agreement_score(self, mixed_structure_df):
         result = _compute_scan_level_confidence(
             mixed_structure_df,
-
             score_weights={
                 "structure_agreement": 1.0,
                 "tanimoto": 0.0,
                 "cosine_consistency": 0.0,
                 "max_cosine": 0.0,
                 "shared_peaks": 0.0,
+                "library_diversity": 0.0,
             },
         )
         scan_10 = result[result["scan"] == "10"].iloc[0]
@@ -272,3 +277,61 @@ class TestWcrsIntegration:
         result = _compute_scan_level_confidence(mixed_structure_df)
         assert (result["cosine_consistency"] >= 0.0).all()
         assert (result["cosine_consistency"] <= 1.0).all()
+
+
+# ── shared peaks normalization ────────────────────────────────────────────────
+
+
+class TestSharedPeaksNormalization:
+    def _df(self, shared_peaks=6):
+        return pd.DataFrame({
+            "#Scan#": ["1"],
+            "MQScore": [0.9],
+            "SharedPeaks": [shared_peaks],
+        })
+
+    def _patch(self, monkeypatch, peak_count):
+        monkeypatch.setattr("bin.scorer.get_query_peak_count_from_mgf", lambda t, s: peak_count)
+        monkeypatch.setattr("bin.scorer.get_query_entropy_from_mgf", lambda t, s: None)
+        monkeypatch.setattr("bin.scorer._get_query_entropy_from_usi", lambda u: None)
+
+    def test_coverage_fraction_path(self, monkeypatch):
+        self._patch(monkeypatch, 10)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=3), task_id="fake")
+        row = result.iloc[0]
+        assert row["shared_peaks_source"] == "coverage_fraction"
+        assert row["shared_peaks_score"] == pytest.approx(3 / 10, rel=1e-4)
+        assert row["query_peak_count"] == 10
+
+    def test_coverage_fraction_caps_at_one(self, monkeypatch):
+        self._patch(monkeypatch, 2)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=5), task_id="fake")
+        assert result.iloc[0]["shared_peaks_score"] == pytest.approx(1.0)
+
+    def test_perfect_coverage_scores_one(self, monkeypatch):
+        self._patch(monkeypatch, 3)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=3), task_id="fake")
+        row = result.iloc[0]
+        assert row["shared_peaks_score"] == pytest.approx(1.0)
+        assert row["shared_peaks_source"] == "coverage_fraction"
+
+    def test_soft_normalization_fallback_when_none(self, monkeypatch):
+        self._patch(monkeypatch, None)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=6), task_id="fake")
+        row = result.iloc[0]
+        assert row["shared_peaks_source"] == "soft_normalization"
+        assert row["shared_peaks_score"] == pytest.approx(6 / (6 + 5), rel=1e-4)
+        assert row["query_peak_count"] is None
+
+    def test_soft_normalization_fallback_when_zero(self, monkeypatch):
+        self._patch(monkeypatch, 0)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=6), task_id="fake")
+        row = result.iloc[0]
+        assert row["shared_peaks_source"] == "soft_normalization"
+        assert row["shared_peaks_score"] == pytest.approx(6 / 11, rel=1e-4)
+
+    def test_new_columns_present(self, monkeypatch):
+        self._patch(monkeypatch, 20)
+        result = _compute_scan_level_confidence(self._df(shared_peaks=4), task_id="fake")
+        assert "shared_peaks_source" in result.columns
+        assert "query_peak_count" in result.columns

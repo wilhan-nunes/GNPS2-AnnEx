@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, PPM_SCALE, MZ_PRECISION_FLOOR
+from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY, PPM_SCALE, MZ_PRECISION_FLOOR
 from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
@@ -17,19 +17,23 @@ from .normalizer import (
 )
 from .tanimoto import _canonical_smiles, compute_cross_group_tanimoto, scan_tanimoto
 from .wcrs import Subgroup, wcrs
-from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
+from .mgf_loader import get_query_entropy_from_mgf, get_query_peak_count_from_mgf, _entropy_label
 
 logger = logging.getLogger(__name__)
 
 # Weights are pre-normalised (sum = 1.0).
-# Nominal intent: structure 50 : tanimoto 15 : spectral 25 : cosine 10 : shared_peaks 10
-# Divided by 110 to keep the sum exactly 1.
+# Nominal intent: structure 45 : tanimoto 15 : cosine_consistency 25 : max_cosine 15
+#                 shared_peaks 5 : library_diversity 5   (total 110)
+# max_cosine raised (10→15) to better discriminate correct vs wrong annotations.
+# library_diversity rewards consensus across independent source databases.
+# shared_peaks reduced (10→5) as it is strongly correlated with max_cosine.
 DEFAULT_SCORE_WEIGHTS = {
-    "structure_agreement": 50 / 110,
+    "structure_agreement": 45 / 110,
     "tanimoto": 15 / 110,
     "cosine_consistency": 25 / 110,
-    "max_cosine": 10 / 110,
-    "shared_peaks": 10 / 110,
+    "max_cosine": 15 / 110,
+    "shared_peaks": 5 / 110,
+    "library_diversity": 5 / 110,
 }
 
 
@@ -72,6 +76,7 @@ def _compute_confidence_score(
     cosine_consistency,
     max_cosine,
     shared_peaks_score=0.0,
+    library_diversity_score=0.0,
     score_weights=None,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
@@ -81,6 +86,7 @@ def _compute_confidence_score(
         + normalized_score_weights["cosine_consistency"] * float(cosine_consistency)
         + normalized_score_weights["max_cosine"] * float(max_cosine)
         + normalized_score_weights.get("shared_peaks", 0.0) * float(shared_peaks_score)
+        + normalized_score_weights.get("library_diversity", 0.0) * float(library_diversity_score)
     )
     return min(100.0, max(0.0, confidence_score))
 
@@ -289,9 +295,26 @@ def _compute_scan_level_confidence(
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
 
-        # SharedPeaks: soft normalisation x/(x+K) → [0, 1]
+        # SharedPeaks: coverage fraction (shared / query_peak_count) when available,
+        # falling back to soft normalisation x/(x+K) when query peak count is unknown.
         raw_shared_peaks = float(best["mean_shared_peaks"]) if not math.isnan(float(best["mean_shared_peaks"])) else 0.0
-        shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
+        query_peak_count = get_query_peak_count_from_mgf(task_id, scan)
+        if query_peak_count is not None and query_peak_count > 0:
+            shared_peaks_score = min(1.0, raw_shared_peaks / query_peak_count)
+            shared_peaks_source = "coverage_fraction"
+        else:
+            shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
+            shared_peaks_source = "soft_normalization"
+
+        # Library diversity: fraction of unique library files in the winner group.
+        # Reads the "LibraryName" column directly; soft-capped at K_LIBRARY_DIVERSITY.
+        library_diversity_score = 0.0
+        if "LibraryName" in work_df.columns:
+            unique_libs: set = set()
+            for lib in structure_hits["LibraryName"].astype(str):
+                if lib.lower() not in {"nan", "", "none"}:
+                    unique_libs.add(lib)
+            library_diversity_score = min(len(unique_libs), K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY
 
         # MZErrorPPM: multiplicative precision factor, floored to avoid over-penalising low-res instruments
         raw_abs_ppm = float(best["median_abs_ppm"])
@@ -328,6 +351,7 @@ def _compute_scan_level_confidence(
             cosine_consistency,
             max_cosine,
             shared_peaks_score=shared_peaks_score,
+            library_diversity_score=library_diversity_score,
             score_weights=normalized_score_weights,
         )
         confidence_score = min(100.0, max(0.0, confidence_score * mz_precision))
@@ -358,6 +382,9 @@ def _compute_scan_level_confidence(
                 "tanimoto_source": tanimoto_source,
                 "shared_peaks": round(raw_shared_peaks, 2),
                 "shared_peaks_score": round(shared_peaks_score, 4),
+                "shared_peaks_source": shared_peaks_source,
+                "query_peak_count": query_peak_count,
+                "library_diversity_score": round(library_diversity_score, 4),
                 "median_abs_ppm_error": round(raw_abs_ppm, 3) if not math.isnan(raw_abs_ppm) else None,
                 "mz_precision": round(mz_precision, 4),
                 "confidence_score": round(confidence_score, 1),

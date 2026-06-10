@@ -12,6 +12,7 @@ from app import app
 from components import (
     _build_detail_panel,
     _build_tanimoto_heatmap_figure,
+    _compute_monoisotopic_mass,
     _format_workflow_label,
     _net_spinner,
     _render_mol_png_data_uri,
@@ -60,6 +61,7 @@ _SCORE_WEIGHT_INPUT_DEFS = [
     },
     {"key": "max_cosine", "id": "score-weight-max-cosine", "label": "Max cosine"},
     {"key": "shared_peaks", "id": "score-weight-shared-peaks", "label": "Shared peaks"},
+    {"key": "library_diversity", "id": "score-weight-lib-diversity", "label": "Lib diversity"},
 ]
 _SCORE_WEIGHT_QUERY_PARAMS = {
     "structure_agreement": "w_structure",
@@ -67,6 +69,7 @@ _SCORE_WEIGHT_QUERY_PARAMS = {
     "cosine_consistency": "w_spectral",
     "max_cosine": "w_cosine",
     "shared_peaks": "w_shared",
+    "library_diversity": "w_lib_div",
 }
 
 # Column definitions for the summary AG Grid table.
@@ -499,6 +502,7 @@ def _parse_score_weights_from_inputs(
     spectral_value,
     max_cosine_value,
     shared_peaks_value=None,
+    library_diversity_value=None,
 ):
     input_values = {
         "structure_agreement": structure_value,
@@ -506,6 +510,7 @@ def _parse_score_weights_from_inputs(
         "cosine_consistency": spectral_value,
         "max_cosine": max_cosine_value,
         "shared_peaks": shared_peaks_value,
+        "library_diversity": library_diversity_value,
     }
     parsed_weights = {}
     for key, default_value in DEFAULT_SCORE_WEIGHTS.items():
@@ -1133,6 +1138,7 @@ dash_app.layout = html.Div([NAVBAR, BODY])
         Output("score-weight-spectral", "value"),
         Output("score-weight-max-cosine", "value"),
         Output("score-weight-shared-peaks", "value"),
+        Output("score-weight-lib-diversity", "value"),
         Output("ppm-scale", "value"),
         Output("ppm-floor", "value"),
     ],
@@ -1151,6 +1157,7 @@ def determine_task_from_url(search):
         score_weight_inputs["cosine_consistency"],
         score_weight_inputs["max_cosine"],
         score_weight_inputs["shared_peaks"],
+        score_weight_inputs["library_diversity"],
         query_state["ppm_scale"],
         query_state["ppm_floor"],
     )
@@ -1311,6 +1318,7 @@ def reset_pubchem_overrides_on_page_change(search):
         State("score-weight-spectral", "value"),
         State("score-weight-max-cosine", "value"),
         State("score-weight-shared-peaks", "value"),
+        State("score-weight-lib-diversity", "value"),
         State("ppm-scale", "value"),
         State("ppm-floor", "value"),
     ],
@@ -1325,6 +1333,7 @@ def load_library_matches_callback(
     spectral_weight_value,
     max_cosine_weight_value,
     shared_peaks_weight_value,
+    library_diversity_weight_value,
     ppm_scale_value,
     ppm_floor_value,
 ):
@@ -1351,6 +1360,7 @@ def load_library_matches_callback(
             spectral_weight_value,
             max_cosine_weight_value,
             shared_peaks_weight_value,
+            library_diversity_weight_value,
         )
         ppm_scale, ppm_floor = _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value)
 
@@ -1910,29 +1920,25 @@ def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
         smiles_for_render = selected_smiles or base_smiles
 
         image_url = _render_mol_png_data_uri(smiles=smiles_for_render, inchi=inchi)
+        mono_mass = _compute_monoisotopic_mass(smiles_for_render, inchi)
         if image_url:
-            updated_children.append(
-                html.Div(
-                    [
-                        html.Img(
-                            src=image_url,
-                            style={
-                                "width": "180px",
-                                "height": "180px",
-                                "objectFit": "contain",
-                            },
-                        ),
-                        html.Small(
-                            (
-                                "Structure from selected PubChem match"
-                                if selected_smiles
-                                else "Structure from library/InChI"
-                            ),
-                            className="text-muted d-block",
-                        ),
-                    ]
-                )
-            )
+            children = [
+                html.Img(
+                    src=image_url,
+                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                ),
+                html.Small(
+                    "Structure from selected PubChem match" if selected_smiles else "Structure from library/InChI",
+                    className="text-muted d-block",
+                ),
+            ]
+            if mono_mass is not None:
+                children.append(html.Small(
+                    f"Monoisotopic mass: {mono_mass:.4f} Da",
+                    className="text-muted d-block text-center mt-1",
+                    style={"fontSize": "11px"},
+                ))
+            updated_children.append(html.Div(children))
         else:
             updated_children.append(
                 html.Small(
