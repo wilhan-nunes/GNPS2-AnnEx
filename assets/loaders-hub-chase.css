@@ -1,0 +1,108 @@
+/*
+  LOADER 7 — HUB CHASE
+  Same as hub but with a "chasing tail" indeterminate ring animation.
+  Drop into Dash /assets/ alongside loaders.css and loaders-hub.css.
+
+  HTML markup:
+  <div class="ln-loader ln-hub-chase">
+    <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="100" cy="100" r="82" class="ln-hc-ring"/>
+      <line x1="100" y1="100" x2="106" y2="58"  class="ln-hc-spoke ln-hc-sp1"/>
+      <line x1="100" y1="100" x2="145" y2="94"  class="ln-hc-spoke ln-hc-sp2"/>
+      <line x1="100" y1="100" x2="138" y2="142" class="ln-hc-spoke ln-hc-sp3"/>
+      <line x1="100" y1="100" x2="58"  y2="140" class="ln-hc-spoke ln-hc-sp4"/>
+      <circle cx="106" cy="58"  r="10" class="ln-hc-sat ln-hc-sat1"/>
+      <circle cx="145" cy="94"  r="10" class="ln-hc-sat ln-hc-sat2"/>
+      <circle cx="138" cy="142" r="10" class="ln-hc-sat ln-hc-sat3"/>
+      <circle cx="58"  cy="140" r="10" class="ln-hc-sat ln-hc-sat4"/>
+      <circle cx="100" cy="100" r="18" class="ln-hc-core"/>
+    </svg>
+  </div>
+*/
+
+.ln-hub-chase {
+  --hub-color: #1e6b84;
+}
+
+/* Chasing-tail ring:
+   Two animations composited —
+   1. Overall rotation of the ring
+   2. Arc length pulses: short → long → short
+   Together they create the tail-chase illusion. */
+
+.ln-hub-chase .ln-hc-ring {
+  stroke: var(--hub-color);
+  stroke-width: 4;
+  stroke-linecap: round;
+  fill: none;
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+  animation:
+    ln-hc-rotate 2.16s linear infinite,
+    ln-hc-dash   2.16s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Circumference of r=82 circle ≈ 515 */
+@keyframes ln-hc-dash {
+  0%   { stroke-dasharray:   2 513; stroke-dashoffset:   0; }
+  45%  { stroke-dasharray: 385 130; stroke-dashoffset: -128; }
+  100% { stroke-dasharray:   2 513; stroke-dashoffset: -515; }
+}
+
+@keyframes ln-hc-rotate {
+  0%   { transform: rotate(0deg);   }
+  100% { transform: rotate(360deg); }
+}
+
+/* Center core — breathes in size only */
+.ln-hub-chase .ln-hc-core {
+  fill: var(--hub-color);
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-hc-core-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes ln-hc-core-breathe {
+  0%, 100% { transform: scale(1);    }
+  50%       { transform: scale(0.75); }
+}
+
+/* Spokes — extend and contract */
+.ln-hub-chase .ln-hc-spoke {
+  stroke: var(--hub-color);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 52;
+  animation: ln-hc-spoke-extend 3.2s ease-in-out infinite;
+}
+
+.ln-hub-chase .ln-hc-sp1 { animation-delay: 0s;   }
+.ln-hub-chase .ln-hc-sp2 { animation-delay: 0.2s; }
+.ln-hub-chase .ln-hc-sp3 { animation-delay: 0.4s; }
+.ln-hub-chase .ln-hc-sp4 { animation-delay: 0.6s; }
+
+@keyframes ln-hc-spoke-extend {
+  0%, 100% { stroke-dashoffset: 0;  opacity: 0.9;  }
+  50%       { stroke-dashoffset: 28; opacity: 0.35; }
+}
+
+/* Satellite hollow circles */
+.ln-hub-chase .ln-hc-sat {
+  stroke: var(--hub-color);
+  stroke-width: 2;
+  fill: #fff;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-hc-sat-pulse 3.2s ease-in-out infinite;
+}
+
+.ln-hub-chase .ln-hc-sat1 { animation-delay: 0s;    }
+.ln-hub-chase .ln-hc-sat2 { animation-delay: 0.22s; }
+.ln-hub-chase .ln-hc-sat3 { animation-delay: 0.44s; }
+.ln-hub-chase .ln-hc-sat4 { animation-delay: 0.66s; }
+
+@keyframes ln-hc-sat-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  30%       { transform: scale(1.35); opacity: 0.9; }
+  65%       { transform: scale(0.65); opacity: 0.4; }
+}

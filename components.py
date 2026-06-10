@@ -37,6 +37,34 @@ from bin.tanimoto import _smiles_to_morgan_fp, scan_tanimoto
 logger = logging.getLogger(__name__)
 
 
+_NET_SPINNER_HTML = """
+<div class="spinner-wrap">
+  <div class="ln-loader ln-hub-chase">
+    <svg viewBox="0 0 200 200" fill="white" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="100" cy="100" r="82" class="ln-hc-ring"/>
+      <line x1="100" y1="100" x2="106" y2="58"  class="ln-hc-spoke ln-hc-sp1"/>
+      <line x1="100" y1="100" x2="145" y2="94"  class="ln-hc-spoke ln-hc-sp2"/>
+      <line x1="100" y1="100" x2="138" y2="142" class="ln-hc-spoke ln-hc-sp3"/>
+      <line x1="100" y1="100" x2="58"  y2="140" class="ln-hc-spoke ln-hc-sp4"/>
+      <circle cx="106" cy="58"  r="10" class="ln-hc-sat ln-hc-sat1"/>
+      <circle cx="145" cy="94"  r="10" class="ln-hc-sat ln-hc-sat2"/>
+      <circle cx="138" cy="142" r="10" class="ln-hc-sat ln-hc-sat3"/>
+      <circle cx="58"  cy="140" r="10" class="ln-hc-sat ln-hc-sat4"/>
+      <circle cx="100" cy="100" r="18" class="ln-hc-core"/>
+    </svg>
+  </div>
+  <span class="spinner-label">{label}</span>
+</div>
+"""
+
+
+def _net_spinner(label="loading"):
+    return dcc.Markdown(
+        _NET_SPINNER_HTML.format(label=label),
+        dangerously_allow_html=True,
+    )
+
+
 def _search_pubchem_candidates(inchikey: str, name: str, max_results: int = 8) -> list:
     """
     Search PubChem for compound candidates.
@@ -245,13 +273,11 @@ def _format_workflow_label(workflow_choice):
     return workflow_label_map.get(_to_text(workflow_choice).lower(), workflow_choice)
 
 
-def _format_entropy_source_label(entropy_source):
+def _format_cosine_consistency_source_label(source):
     source_label_map = {
-        "spectral_entropy": "Spectral entropy similarity",
-        "mean_cosine_fallback": "Mean cosine fallback",
-        "disabled": "Entropy disabled; mean cosine fallback",
+        "cosine_consistency": "Cosine consistency (spectral reproducibility)",
     }
-    return source_label_map.get(_to_text(entropy_source), "Similarity evidence")
+    return source_label_map.get(_to_text(source), "Similarity evidence")
 
 
 def _format_tanimoto_source_label(tanimoto_source):
@@ -262,6 +288,7 @@ def _format_tanimoto_source_label(tanimoto_source):
         "single_structure_pubchem": "Tanimoto (single structure — perfect consensus; SMILES via PubChem)",
         "structure_agreement_fallback": "Structure agreement fallback (too few SMILES for Tanimoto)",
         "unavailable": "Unavailable (RDKit error)",
+        "tanimoto_wcrs": "Tanimoto (WCRS weighted centroid, ECFP4 per group)",
     }
     return source_label_map.get(_to_text(tanimoto_source), "Tanimoto structural similarity")
 
@@ -294,13 +321,13 @@ def _confidence_palette(confidence_label):
             "color": "#d48a18",
             "badge_background": "#fff1d6",
             "badge_border": "#f0cb7e",
-            "tone": "Inconclusive evidence",
+            "tone": "Check for Isomers",
         },
         "Inconsistent evidence": {
             "color": "#d35d47",
             "badge_background": "#fde2de",
             "badge_border": "#efb0a5",
-            "tone": "Inconsistent evidence across matches",
+            "tone": "Metrics disagree — check evidence details",
         },
     }
     return palette_map.get(
@@ -358,7 +385,6 @@ def _build_reliability_breakdown_panel(
     workflow_choice,
     resolved_workflow,
     score_row,
-    use_entropy_similarity,
     score_weights=None,
 ):
     confidence_score = float(score_row["confidence_score"])
@@ -368,28 +394,34 @@ def _build_reliability_breakdown_panel(
     supporting_matches = int(score_row["supporting_matches"])
     total_matches = int(score_row["total_matches"])
     support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
-    similarity_value = float(score_row["entropy_similarity"])
-    entropy_source = _to_text(score_row["entropy_source"])
+    similarity_value = float(score_row["cosine_consistency"])
+    cosine_consistency_src = _to_text(score_row["cosine_consistency_source"])
     tanimoto_score = float(score_row["tanimoto_score"])
     tanimoto_source = _to_text(score_row["tanimoto_source"])
     max_cosine = float(score_row["max_cosine"])
     mean_cosine = float(score_row["mean_cosine"])
     top_compound = _to_text(score_row["top_compound"]) or "Unknown Compound"
     structure_key = _to_text(score_row["structure_key"])
+    median_ppm = score_row.get("median_abs_ppm_error")
+    mz_precision_val = float(score_row.get("mz_precision", 1.0))
+    raw_shared_peaks = float(score_row.get("shared_peaks", 0.0) or 0.0)
+    shared_peaks_score_val = float(score_row.get("shared_peaks_score", 0.0) or 0.0)
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
 
     similarity_formula = (
-        f"entropy similarity × {_format_weight_percent(normalized_score_weights['spectral_similarity'])}"
-        if entropy_source == "spectral_entropy"
-        else f"mean cosine fallback × {_format_weight_percent(normalized_score_weights['spectral_similarity'])}"
+        f"cosine consistency × {_format_weight_percent(normalized_score_weights['cosine_consistency'])}"
     )
     similarity_secondary = (
-        f"Mean cosine: {mean_cosine:.4f}"
-        if entropy_source == "spectral_entropy"
-        else "Used because entropy was unavailable or disabled"
+        f"1 − (std/mean) of cosines across {supporting_matches} supporting hits; "
+        f"mean cosine: {mean_cosine:.4f}"
     )
 
     tanimoto_label = _format_tanimoto_source_label(tanimoto_source)
+    tanimoto_formula = (
+        f"WCRS avg. similarity × {_format_weight_percent(normalized_score_weights['tanimoto'])} · source: {tanimoto_label}"
+        if tanimoto_source == "tanimoto_wcrs"
+        else f"ECFP4 Tanimoto × {_format_weight_percent(normalized_score_weights['tanimoto'])} · source: {tanimoto_label}"
+    )
     tanimoto_secondary = (
         "Mean pairwise Tanimoto (ECFP4, r=2, 2048-bit) across unique SMILES in this scan"
         if tanimoto_source == "tanimoto_ecfp4"
@@ -401,6 +433,8 @@ def _build_reliability_breakdown_panel(
         if tanimoto_source == "single_structure_pubchem"
         else "Fell back to hit-count structure agreement (fewer than 2 unique valid SMILES)"
         if tanimoto_source == "structure_agreement_fallback"
+        else "WCRS d̄ᵢ: weighted avg. ECFP4 Tanimoto from winner group to all evidence groups (size-weighted)"
+        if tanimoto_source == "tanimoto_wcrs"
         else "RDKit fingerprint computation unavailable"
     )
 
@@ -408,7 +442,7 @@ def _build_reliability_breakdown_panel(
         {
             "label": "Structure agreement",
             "formula": (
-                "same planar structure or positional-isomer family / total hits × "
+                "supporting hits / total hits × "
                 f"{_format_weight_percent(normalized_score_weights['structure_agreement'])}"
             ),
             "weight": normalized_score_weights["structure_agreement"],
@@ -418,21 +452,18 @@ def _build_reliability_breakdown_panel(
         },
         {
             "label": "Tanimoto structural similarity",
-            "formula": (
-                "mean pairwise ECFP4 Tanimoto × "
-                f"{_format_weight_percent(normalized_score_weights['tanimoto'])} · source: {tanimoto_label}"
-            ),
+            "formula": tanimoto_formula,
             "weight": normalized_score_weights["tanimoto"],
             "value": tanimoto_score,
             "raw_primary": f"{tanimoto_score:.4f} · {tanimoto_label}",
             "raw_secondary": tanimoto_secondary,
         },
         {
-            "label": "Spectral similarity",
+            "label": "Spectral reproducibility",
             "formula": similarity_formula,
-            "weight": normalized_score_weights["spectral_similarity"],
+            "weight": normalized_score_weights["cosine_consistency"],
             "value": similarity_value,
-            "raw_primary": f"{similarity_value:.4f} from {_format_entropy_source_label(entropy_source).lower()}",
+            "raw_primary": f"{similarity_value:.4f} · {_format_cosine_consistency_source_label(cosine_consistency_src).lower()}",
             "raw_secondary": similarity_secondary,
         },
         {
@@ -443,15 +474,25 @@ def _build_reliability_breakdown_panel(
             "raw_primary": f"{max_cosine:.4f} strongest library hit",
             "raw_secondary": f"Mean cosine across supporting hits: {mean_cosine:.4f}",
         },
+        {
+            "label": "Shared peaks",
+            "formula": f"normalised peak overlap × {_format_weight_percent(normalized_score_weights.get('shared_peaks', 0.0))}",
+            "weight": normalized_score_weights.get("shared_peaks", 0.0),
+            "value": shared_peaks_score_val,
+            "raw_primary": f"{raw_shared_peaks:.1f} mean shared peaks → {shared_peaks_score_val:.4f} (soft-normalised x/(x+5))",
+            "raw_secondary": "Counts fragment ions matched between query and library; penalises sparse spectral overlap",
+        },
     ]
 
     metadata_fields = [
         ("Task ID", task_id),
         ("Scan", scan),
-        ("Workflow", _format_workflow_label(resolved_workflow or workflow_choice)),
-        ("Spectral sim. source", _format_entropy_source_label(entropy_source)),
         ("Tanimoto source", tanimoto_label),
         ("Structure support", f"{supporting_matches} / {total_matches}"),
+        ("m/z precision", (
+            f"{median_ppm:.3f} ppm → ×{mz_precision_val:.4f}"
+            if median_ppm is not None else "N/A"
+        )),
     ]
 
     metric_rows = []
@@ -600,12 +641,6 @@ def _build_reliability_breakdown_panel(
                             "Inconsistent evidence: score < 55",
                         ]
                     ),
-                    html.Span(
-                        "Spectral similarity uses spectral entropy when available, otherwise mean cosine. "
-                        "Tanimoto uses ECFP4 mean pairwise similarity when ≥ 2 unique SMILES are present, "
-                        "otherwise falls back to the hit-count structure agreement fraction.",
-                        className="legend-note",
-                    ),
                 ],
                 className="legend",
             ),
@@ -615,7 +650,6 @@ def _build_reliability_breakdown_panel(
                     href=(
                         f"/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
                         f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-                        f"&entropy={'1' if use_entropy_similarity else '0'}"
                     ),
                     className="detail-back-link",
                 ),
@@ -1126,11 +1160,12 @@ def _build_detail_panel(
     task_id,
     scan,
     workflow_choice,
-    use_entropy_similarity=True,
     score_weights=None,
     pubchem_overrides=None,
     use_pubchem_for_score=False,
     precomputed_query_entropy=None,
+    ppm_scale=None,
+    mz_precision_floor=None,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
     matches_df = _load_library_matches(task_id, workflow_choice)
@@ -1140,8 +1175,9 @@ def _build_detail_panel(
         task_id=task_id,
         workflow_choice=resolved_workflow,
         scan_filter=scan,
-        use_entropy_similarity=use_entropy_similarity,
         score_weights=normalized_score_weights,
+        ppm_scale=ppm_scale,
+        mz_precision_floor=mz_precision_floor,
     )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
@@ -1162,6 +1198,7 @@ def _build_detail_panel(
     library_usi_col = _find_first_column(scan_df, ["library_usi", "LibraryUSI", "library usi"])
     library_name_col = _find_first_column(scan_df, ["LibraryName", "library_name", "Library Name"])
     adduct_col = _find_first_column(scan_df, ["Adduct", "adduct", "Precursor_type", "Precursor Type"])
+    mz_error_col = _find_first_column(scan_df, ["MZErrorPPM", "mz_error_ppm"])
     spectrum_file_col = _find_first_column(scan_df, ["SpectrumFile"])
     smiles_col = _find_first_column(scan_df, ["Smiles", "SMILES", "smiles"])
     inchikey_col = _find_first_column(scan_df, ["InChIKey", "inchikey", "INCHIKEY"])
@@ -1177,6 +1214,7 @@ def _build_detail_panel(
     scan_df["_library_usi"] = scan_df[library_usi_col].astype(str) if library_usi_col else ""
     scan_df["_library_name"] = scan_df[library_name_col].astype(str) if library_name_col else ""
     scan_df["_adduct"] = scan_df[adduct_col].astype(str) if adduct_col else ""
+    scan_df["_mz_error_ppm"] = pd.to_numeric(scan_df[mz_error_col], errors="coerce") if mz_error_col is not None else float("nan")
     scan_df["_smiles"] = scan_df[smiles_col].astype(str) if smiles_col else ""
     scan_df["_inchikey"] = scan_df[inchikey_col].astype(str) if inchikey_col else ""
     scan_df["_inchi"] = scan_df[inchi_col].astype(str) if inchi_col else ""
@@ -1229,9 +1267,14 @@ def _build_detail_panel(
                 continue
 
             adduct = _to_text(row.get("_adduct"))
+            mz_error_ppm = row.get("_mz_error_ppm")
             existing_match = match_lookup.get(normalized_library_usi)
             if existing_match is None:
-                existing_match = {"library_usi": normalized_library_usi, "adduct": adduct}
+                existing_match = {
+                    "library_usi": normalized_library_usi,
+                    "adduct": adduct,
+                    "mz_error_ppm": mz_error_ppm,
+                }
                 match_lookup[normalized_library_usi] = existing_match
                 ordered_matches.append(existing_match)
                 continue
@@ -1278,6 +1321,11 @@ def _build_detail_panel(
         mirror_links = []
         for link_idx, library_match in enumerate(library_matches):
             adduct_label = library_match["adduct"] or "Adduct unavailable"
+            mz_error_ppm = library_match.get("mz_error_ppm")
+            try:
+                ppm_label = f"{float(mz_error_ppm):.2f} ppm" if mz_error_ppm is not None and not (mz_error_ppm != mz_error_ppm) else None
+            except (TypeError, ValueError):
+                ppm_label = None
             mirror_links.append(
                 html.Div(
                     [
@@ -1287,6 +1335,7 @@ def _build_detail_panel(
                             href=_build_mirror_plot_link(query_usi, library_match["library_usi"]),
                             target="_blank",
                         ),
+                        html.Span(f" ({ppm_label})", className="text-muted small ms-1") if ppm_label else None,
                     ],
                     className="mb-1",
                 )
@@ -1479,12 +1528,12 @@ def _build_detail_panel(
             elif tanimoto_source == "single_structure":
                 tanimoto_source = "single_structure_pubchem"
 
-            entropy_similarity = float(score_row_for_panel["entropy_similarity"])
+            cosine_consistency_val = float(score_row_for_panel["cosine_consistency"])
             max_cosine = float(score_row_for_panel["max_cosine"])
             confidence_score = _compute_confidence_score(
                 support_fraction,
                 float(tanimoto_score),
-                entropy_similarity,
+                cosine_consistency_val,
                 max_cosine,
                 score_weights=normalized_score_weights,
             )
@@ -1502,7 +1551,6 @@ def _build_detail_panel(
         workflow_choice,
         resolved_workflow,
         score_row_for_panel,
-        use_entropy_similarity,
         score_weights=normalized_score_weights,
     )
 
@@ -1562,7 +1610,7 @@ def _build_detail_panel(
             )
         masst_card = dbc.Card(
             [
-                dbc.CardHeader(html.H5("Biological Context (MASST/REDU) — Per Structure")),
+                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
                 dbc.CardBody(
                     dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
                 ),

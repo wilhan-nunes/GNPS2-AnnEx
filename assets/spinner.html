@@ -1,0 +1,127 @@
+<!-- spinner.html / paste into your Dash assets or layout -->
+
+<style>
+  .spinner-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 3rem 0;
+  }
+  .spinner-label {
+    font-size: 13px;
+    color: var(--color-text-tertiary);
+    letter-spacing: 0.08em;
+  }
+  .net-canvas {
+    width: 140px;
+    height: 140px;
+  }
+  .net-canvas svg {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .edge {
+    stroke: currentColor;
+    fill: none;
+    opacity: 0;
+    animation: edgePulse 3.8s ease-in-out infinite;
+  }
+  .node-dot {
+    fill: currentColor;
+    animation: nodePulse 3.8s ease-in-out infinite;
+  }
+  .node-ring {
+    fill: none;
+    stroke: currentColor;
+    animation: ringExpand 3.8s ease-in-out infinite;
+  }
+  .hub-dot  { fill: currentColor; animation: hubPulse 3.8s ease-in-out infinite; }
+  .hub-ring { fill: none; stroke: currentColor; animation: hubRing 3.8s ease-in-out infinite; }
+
+  @keyframes nodePulse {
+    0%, 100% { opacity: 0.12; }
+    50%       { opacity: 1; }
+  }
+  @keyframes ringExpand {
+    0%   { opacity: 0.55; stroke-width: 1.4; }
+    55%  { opacity: 0;    stroke-width: 0.3; }
+    100% { opacity: 0;    stroke-width: 1.4; }
+  }
+  @keyframes edgePulse {
+    0%, 100% { opacity: 0.05; stroke-width: 0.7; }
+    50%       { opacity: 0.45; stroke-width: 1.2; }
+  }
+  @keyframes hubPulse {
+    0%, 100% { opacity: 0.15; }
+    50%       { opacity: 1; }
+  }
+  @keyframes hubRing {
+    0%   { opacity: 0.5; stroke-width: 1.8; }
+    60%  { opacity: 0;   stroke-width: 0.3; }
+    100% { opacity: 0;   stroke-width: 1.8; }
+  }
+
+  .e0 { animation-delay: 0.00s; }
+  .e1 { animation-delay: 0.35s; }
+  .e2 { animation-delay: 0.68s; }
+  .e3 { animation-delay: 1.05s; }
+  .e4 { animation-delay: 1.42s; }
+
+  .n0 { animation-delay: 0.12s; }
+  .n1 { animation-delay: 0.48s; }
+  .n2 { animation-delay: 0.82s; }
+  .n3 { animation-delay: 1.18s; }
+  .n4 { animation-delay: 1.55s; }
+
+  .r0 { animation-delay: 0.20s; }
+  .r1 { animation-delay: 0.56s; }
+  .r2 { animation-delay: 0.90s; }
+  .r3 { animation-delay: 1.26s; }
+  .r4 { animation-delay: 1.62s; }
+
+  .hub-dot  { animation-delay: 0s; }
+  .hub-ring { animation-delay: 0.10s; }
+</style>
+
+<div class="spinner-wrap">
+  <div class="net-canvas">
+    <svg viewBox="0 0 140 140" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- spokes: hub → outer nodes only -->
+      <line class="edge e0" x1="65" y1="65" x2="14"  y2="18"/>
+      <line class="edge e1" x1="65" y1="65" x2="118" y2="22"/>
+      <line class="edge e2" x1="65" y1="65" x2="128" y2="88"/>
+      <line class="edge e3" x1="65" y1="65" x2="55"  y2="128"/>
+      <line class="edge e4" x1="65" y1="65" x2="10"  y2="100"/>
+
+      <!-- node A — top-left, large -->
+      <circle class="node-dot n0" cx="14"  cy="18"  r="6"/>
+      <circle class="node-ring r0" cx="14"  cy="18"  r="9"/>
+
+      <!-- node B — top-right, medium -->
+      <circle class="node-dot n1" cx="118" cy="22"  r="4"/>
+      <circle class="node-ring r1" cx="118" cy="22"  r="6.5"/>
+
+      <!-- node C — right, large -->
+      <circle class="node-dot n2" cx="128" cy="88"  r="7"/>
+      <circle class="node-ring r2" cx="128" cy="88"  r="11"/>
+
+      <!-- node D — bottom, small -->
+      <circle class="node-dot n3" cx="55"  cy="128" r="3"/>
+      <circle class="node-ring r3" cx="55"  cy="128" r="5"/>
+
+      <!-- node E — left-low, medium -->
+      <circle class="node-dot n4" cx="10"  cy="100" r="5"/>
+      <circle class="node-ring r4" cx="10"  cy="100" r="8"/>
+
+      <!-- hub -->
+      <circle class="hub-dot"  cx="65" cy="65" r="7"/>
+      <circle class="hub-ring" cx="65" cy="65" r="11"/>
+
+    </svg>
+  </div>
+  <span class="spinner-label">loading</span>
+</div>

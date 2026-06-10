@@ -1,0 +1,542 @@
+/*
+  LOADER NAMES
+  ─────────────
+  .ln-constellation   — 5 nodes pulse in staggered sequence, lines fade
+  .ln-orbit           — 3 nodes orbit a central node with trailing arcs
+  .ln-goo             — gooey blobby mass, satellites attract and repel
+  .ln-ripple          — 4 nodes emit expanding rings, connections pulse
+  .ln-web             — triangular web breathes in and out
+
+  SVG MARKUP (copy into each html.Div)
+  ─────────────────────────────────────
+  See comments before each loader section below.
+*/
+
+
+/* ═══════════════════════════════════════════
+   BASE
+═══════════════════════════════════════════ */
+
+.ln-loader {
+  width: 200px;
+  height: 200px;
+  display: inline-block;
+  position: relative;
+}
+
+.ln-loader svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 1 — CONSTELLATION
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-constellation">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <g class="ln-c-lines">
+         <line x1="45" y1="55"  x2="155" y2="45"  class="ln-c-line"/>
+         <line x1="45" y1="55"  x2="105" y2="100" class="ln-c-line"/>
+         <line x1="155" y1="45" x2="105" y2="100" class="ln-c-line"/>
+         <line x1="105" y1="100" x2="48"  y2="155" class="ln-c-line"/>
+         <line x1="105" y1="100" x2="162" y2="158" class="ln-c-line"/>
+         <line x1="48"  y1="155" x2="162" y2="158" class="ln-c-line"/>
+       </g>
+       <circle cx="45"  cy="55"  r="5" class="ln-c-node ln-c-n1"/>
+       <circle cx="155" cy="45"  r="5" class="ln-c-node ln-c-n2"/>
+       <circle cx="105" cy="100" r="5" class="ln-c-node ln-c-n3"/>
+       <circle cx="48"  cy="155" r="5" class="ln-c-node ln-c-n4"/>
+       <circle cx="162" cy="158" r="5" class="ln-c-node ln-c-n5"/>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+.ln-constellation .ln-c-line {
+  stroke: #000;
+  stroke-width: 1;
+  stroke-linecap: round;
+  animation: ln-line-fade 2.8s ease-in-out infinite;
+}
+
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(1) { animation-delay: 0s;    }
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(2) { animation-delay: 0.25s; }
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(3) { animation-delay: 0.5s;  }
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(4) { animation-delay: 0.75s; }
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(5) { animation-delay: 1.0s;  }
+.ln-constellation .ln-c-lines .ln-c-line:nth-child(6) { animation-delay: 1.25s; }
+
+.ln-constellation .ln-c-node {
+  fill: #000;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-node-pulse 2.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.ln-constellation .ln-c-n1 { animation-delay: 0s;    }
+.ln-constellation .ln-c-n2 { animation-delay: 0.56s; }
+.ln-constellation .ln-c-n3 { animation-delay: 1.12s; }
+.ln-constellation .ln-c-n4 { animation-delay: 1.68s; }
+.ln-constellation .ln-c-n5 { animation-delay: 2.24s; }
+
+@keyframes ln-node-pulse {
+  0%, 100% { r: 4; opacity: 0.25; }
+  20%       { r: 7; opacity: 1;    }
+  40%       { r: 4.5; opacity: 0.5; }
+}
+
+@keyframes ln-line-fade {
+  0%, 100% { opacity: 0.1;  stroke-width: 0.75; }
+  30%       { opacity: 0.8;  stroke-width: 1.5;  }
+  60%       { opacity: 0.15; stroke-width: 0.75; }
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 2 — ORBIT
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-orbit">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <circle cx="100" cy="100" r="38" class="ln-o-track"/>
+       <circle cx="100" cy="100" r="7"  class="ln-o-center"/>
+       <g class="ln-o-arm ln-o-arm1">
+         <line x1="100" y1="100" x2="100" y2="62" class="ln-o-spoke"/>
+         <circle cx="100" cy="62" r="5" class="ln-o-planet"/>
+       </g>
+       <g class="ln-o-arm ln-o-arm2">
+         <line x1="100" y1="100" x2="100" y2="62" class="ln-o-spoke"/>
+         <circle cx="100" cy="62" r="4" class="ln-o-planet"/>
+       </g>
+       <g class="ln-o-arm ln-o-arm3">
+         <line x1="100" y1="100" x2="100" y2="62" class="ln-o-spoke"/>
+         <circle cx="100" cy="62" r="3.5" class="ln-o-planet"/>
+       </g>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+.ln-orbit .ln-o-track {
+  stroke: #000;
+  stroke-width: 0.75;
+  stroke-dasharray: 4 6;
+  opacity: 0.15;
+  animation: ln-track-spin 12s linear infinite;
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+}
+
+.ln-orbit .ln-o-center {
+  fill: #000;
+  animation: ln-center-breathe 3s ease-in-out infinite;
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+}
+
+.ln-orbit .ln-o-arm {
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+}
+
+.ln-orbit .ln-o-arm1 { animation: ln-arm-spin 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: 0s;    }
+.ln-orbit .ln-o-arm2 { animation: ln-arm-spin 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: -1s;   }
+.ln-orbit .ln-o-arm3 { animation: ln-arm-spin 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: -2s;   }
+
+.ln-orbit .ln-o-spoke {
+  stroke: #000;
+  stroke-width: 1;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+
+.ln-orbit .ln-o-planet {
+  fill: #000;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+@keyframes ln-arm-spin {
+  0%   { transform: rotate(0deg);   }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ln-center-breathe {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  50%       { transform: scale(1.35); opacity: 0.6; }
+}
+
+@keyframes ln-track-spin {
+  0%   { transform: rotate(0deg);   }
+  100% { transform: rotate(360deg); }
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 3 — GOO
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-goo">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <defs>
+         <filter id="ln-goo-filter" x="-30%" y="-30%" width="160%" height="160%">
+           <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+           <feColorMatrix in="blur" mode="matrix"
+             values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9"
+             result="goo"/>
+           <feComposite in="SourceGraphic" in2="goo" operator="atop"/>
+         </filter>
+       </defs>
+       <g filter="url(#ln-goo-filter)" class="ln-g-group">
+         <circle cx="100" cy="100" r="20" class="ln-g-core"/>
+         <circle cx="100" cy="55"  r="11" class="ln-g-sat ln-g-s1"/>
+         <circle cx="148" cy="130" r="9"  class="ln-g-sat ln-g-s2"/>
+         <circle cx="55"  cy="138" r="10" class="ln-g-sat ln-g-s3"/>
+       </g>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+.ln-goo .ln-g-core {
+  fill: #000;
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+  animation: ln-goo-core 3.6s ease-in-out infinite;
+}
+
+.ln-goo .ln-g-sat {
+  fill: #000;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ln-goo .ln-g-s1 { animation: ln-goo-sat1 3.6s ease-in-out infinite; }
+.ln-goo .ln-g-s2 { animation: ln-goo-sat2 3.6s ease-in-out infinite; }
+.ln-goo .ln-g-s3 { animation: ln-goo-sat3 3.6s ease-in-out infinite; }
+
+@keyframes ln-goo-core {
+  0%, 100% { r: 20; }
+  40%       { r: 16; }
+  70%       { r: 22; }
+}
+
+@keyframes ln-goo-sat1 {
+  0%, 100% { cy: 55;  r: 11; }
+  30%       { cy: 78;  r: 14; }
+  65%       { cy: 46;  r: 8;  }
+}
+
+@keyframes ln-goo-sat2 {
+  0%, 100% { cx: 148; cy: 130; r: 9;  }
+  35%       { cx: 124; cy: 118; r: 13; }
+  70%       { cx: 155; cy: 140; r: 7;  }
+}
+
+@keyframes ln-goo-sat3 {
+  0%, 100% { cx: 55;  cy: 138; r: 10; }
+  45%       { cx: 78;  cy: 122; r: 13; }
+  75%       { cx: 46;  cy: 148; r: 7;  }
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 4 — RIPPLE
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-ripple">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <line x1="60"  y1="65"  x2="140" y2="60"  class="ln-r-line"/>
+       <line x1="60"  y1="65"  x2="55"  y2="145" class="ln-r-line"/>
+       <line x1="140" y1="60"  x2="150" y2="140" class="ln-r-line"/>
+       <line x1="55"  y1="145" x2="150" y2="140" class="ln-r-line"/>
+       <line x1="60"  y1="65"  x2="150" y2="140" class="ln-r-line"/>
+       <g class="ln-r-node-group ln-r-ng1">
+         <circle cx="60"  cy="65"  r="22" class="ln-r-ring"/>
+         <circle cx="60"  cy="65"  r="5"  class="ln-r-dot"/>
+       </g>
+       <g class="ln-r-node-group ln-r-ng2">
+         <circle cx="140" cy="60"  r="22" class="ln-r-ring"/>
+         <circle cx="140" cy="60"  r="5"  class="ln-r-dot"/>
+       </g>
+       <g class="ln-r-node-group ln-r-ng3">
+         <circle cx="55"  cy="145" r="22" class="ln-r-ring"/>
+         <circle cx="55"  cy="145" r="5"  class="ln-r-dot"/>
+       </g>
+       <g class="ln-r-node-group ln-r-ng4">
+         <circle cx="150" cy="140" r="22" class="ln-r-ring"/>
+         <circle cx="150" cy="140" r="5"  class="ln-r-dot"/>
+       </g>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+.ln-ripple .ln-r-line {
+  stroke: #000;
+  stroke-width: 1;
+  stroke-linecap: round;
+  opacity: 0.2;
+  animation: ln-rline-pulse 3.2s ease-in-out infinite;
+}
+
+.ln-ripple .ln-r-line:nth-child(1) { animation-delay: 0s;    }
+.ln-ripple .ln-r-line:nth-child(2) { animation-delay: 0.3s;  }
+.ln-ripple .ln-r-line:nth-child(3) { animation-delay: 0.6s;  }
+.ln-ripple .ln-r-line:nth-child(4) { animation-delay: 0.9s;  }
+.ln-ripple .ln-r-line:nth-child(5) { animation-delay: 0.45s; }
+
+.ln-ripple .ln-r-dot {
+  fill: #000;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-rdot-pulse 3.2s ease-in-out infinite;
+}
+
+.ln-ripple .ln-r-ring {
+  stroke: #000;
+  stroke-width: 1.5;
+  fill: none;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-ring-expand 3.2s ease-out infinite;
+}
+
+.ln-ripple .ln-r-ng1 .ln-r-ring,
+.ln-ripple .ln-r-ng1 .ln-r-dot { animation-delay: 0s;    }
+.ln-ripple .ln-r-ng2 .ln-r-ring,
+.ln-ripple .ln-r-ng2 .ln-r-dot { animation-delay: 0.8s;  }
+.ln-ripple .ln-r-ng3 .ln-r-ring,
+.ln-ripple .ln-r-ng3 .ln-r-dot { animation-delay: 1.6s;  }
+.ln-ripple .ln-r-ng4 .ln-r-ring,
+.ln-ripple .ln-r-ng4 .ln-r-dot { animation-delay: 2.4s;  }
+
+@keyframes ln-ring-expand {
+  0%   { transform: scale(0.3); opacity: 0.9; }
+  60%  { transform: scale(1.8); opacity: 0;   }
+  100% { transform: scale(1.8); opacity: 0;   }
+}
+
+@keyframes ln-rdot-pulse {
+  0%, 100% { transform: scale(1);   opacity: 0.4; }
+  25%       { transform: scale(1.5); opacity: 1;   }
+  55%       { transform: scale(0.9); opacity: 0.5; }
+}
+
+@keyframes ln-rline-pulse {
+  0%, 100% { opacity: 0.1; }
+  25%       { opacity: 0.7; stroke-width: 1.5; }
+  50%       { opacity: 0.15; }
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 5 — WEB
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-web">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <g class="ln-w-mesh">
+         <line x1="100" y1="38"  x2="162" y2="76"  class="ln-w-edge"/>
+         <line x1="162" y1="76"  x2="162" y2="130" class="ln-w-edge"/>
+         <line x1="162" y1="130" x2="100" y2="164" class="ln-w-edge"/>
+         <line x1="100" y1="164" x2="40"  y2="130" class="ln-w-edge"/>
+         <line x1="40"  y1="130" x2="40"  y2="76"  class="ln-w-edge"/>
+         <line x1="40"  y1="76"  x2="100" y2="38"  class="ln-w-edge"/>
+         <line x1="100" y1="38"  x2="162" y2="130" class="ln-w-edge"/>
+         <line x1="100" y1="38"  x2="40"  y2="130" class="ln-w-edge"/>
+         <line x1="162" y1="76"  x2="40"  y2="130" class="ln-w-edge"/>
+         <line x1="162" y1="76"  x2="100" y2="164" class="ln-w-edge"/>
+         <line x1="40"  y1="76"  x2="162" y2="130" class="ln-w-edge"/>
+         <line x1="40"  y1="76"  x2="100" y2="164" class="ln-w-edge"/>
+       </g>
+       <circle cx="100" cy="38"  r="5.5" class="ln-w-node ln-w-n1"/>
+       <circle cx="162" cy="76"  r="5.5" class="ln-w-node ln-w-n2"/>
+       <circle cx="162" cy="130" r="5.5" class="ln-w-node ln-w-n3"/>
+       <circle cx="100" cy="164" r="5.5" class="ln-w-node ln-w-n4"/>
+       <circle cx="40"  cy="130" r="5.5" class="ln-w-node ln-w-n5"/>
+       <circle cx="40"  cy="76"  r="5.5" class="ln-w-node ln-w-n6"/>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+.ln-web .ln-w-mesh {
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+  animation: ln-web-breathe 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.ln-web .ln-w-edge {
+  stroke: #000;
+  stroke-width: 0.75;
+  stroke-linecap: round;
+  opacity: 0.18;
+}
+
+.ln-web .ln-w-node {
+  fill: #000;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-web-node-breathe 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.ln-web .ln-w-n1 { animation-delay: 0s;    }
+.ln-web .ln-w-n2 { animation-delay: 0.12s; }
+.ln-web .ln-w-n3 { animation-delay: 0.24s; }
+.ln-web .ln-w-n4 { animation-delay: 0.36s; }
+.ln-web .ln-w-n5 { animation-delay: 0.48s; }
+.ln-web .ln-w-n6 { animation-delay: 0.60s; }
+
+@keyframes ln-web-breathe {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  50%       { transform: scale(0.72); opacity: 0.6; }
+}
+
+@keyframes ln-web-node-breathe {
+  0%, 100% { transform: scale(1);    opacity: 0.9; }
+  50%       { transform: scale(1.6);  opacity: 1;   }
+}
+
+
+/* ═══════════════════════════════════════════
+   GOO — TEXT INTERLUDE STATE
+   ─────────────────────────────────────────
+   JS toggles .ln-text-active on .ln-goo
+   to trigger the text interlude between
+   animation cycles.
+═══════════════════════════════════════════ */
+
+.ln-goo .ln-g-group {
+  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+}
+
+.ln-goo.ln-text-active .ln-g-group {
+  opacity: 0;
+  transform: scale(0.25);
+}
+
+/* Text element inside SVG */
+.ln-goo .ln-g-label {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  fill: #000;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  opacity: 0;
+  transition: opacity 0.5s ease 0.3s;
+  pointer-events: none;
+}
+
+.ln-goo.ln-text-active .ln-g-label {
+  opacity: 1;
+}
+
+
+/* ═══════════════════════════════════════════
+   LOADER 6 — HUB
+   ─────────────────────────────────────────
+   HTML:
+   <div class="ln-loader ln-hub">
+     <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+       <circle cx="100" cy="100" r="82" class="ln-h-ring"/>
+       <line x1="100" y1="100" x2="106" y2="58"  class="ln-h-spoke ln-h-sp1"/>
+       <line x1="100" y1="100" x2="145" y2="94"  class="ln-h-spoke ln-h-sp2"/>
+       <line x1="100" y1="100" x2="138" y2="142" class="ln-h-spoke ln-h-sp3"/>
+       <line x1="100" y1="100" x2="58"  y2="140" class="ln-h-spoke ln-h-sp4"/>
+       <circle cx="106" cy="58"  r="10" class="ln-h-sat ln-h-sat1"/>
+       <circle cx="145" cy="94"  r="10" class="ln-h-sat ln-h-sat2"/>
+       <circle cx="138" cy="142" r="10" class="ln-h-sat ln-h-sat3"/>
+       <circle cx="58"  cy="140" r="10" class="ln-h-sat ln-h-sat4"/>
+       <circle cx="100" cy="100" r="18" class="ln-h-core"/>
+     </svg>
+   </div>
+═══════════════════════════════════════════ */
+
+/* Spinning ring — partial arc via dasharray */
+.ln-hub { --hub-color: #1e6b84; }
+
+.ln-hub .ln-h-ring {
+  stroke: var(--hub-color);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 340 175;
+  fill: none;
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+  animation: ln-hub-ring-spin 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes ln-hub-ring-spin {
+  0%   { transform: rotate(0deg);   }
+  100% { transform: rotate(360deg); }
+}
+
+/* Central filled core — breathes in size only, always solid */
+.ln-hub .ln-h-core {
+  fill: var(--hub-color);
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-hub-core-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes ln-hub-core-breathe {
+  0%, 100% { transform: scale(1);    }
+  50%       { transform: scale(0.75); }
+}
+
+/* Spokes — extend / contract via dashoffset */
+.ln-hub .ln-h-spoke {
+  stroke: var(--hub-color);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 52;
+  animation: ln-hub-spoke-extend 3.2s ease-in-out infinite;
+}
+
+.ln-hub .ln-h-sp1 { animation-delay: 0s;    }
+.ln-hub .ln-h-sp2 { animation-delay: 0.2s;  }
+.ln-hub .ln-h-sp3 { animation-delay: 0.4s;  }
+.ln-hub .ln-h-sp4 { animation-delay: 0.6s;  }
+
+@keyframes ln-hub-spoke-extend {
+  0%, 100% { stroke-dashoffset: 0;  opacity: 0.9; }
+  50%       { stroke-dashoffset: 28; opacity: 0.35; }
+}
+
+/* Satellite nodes — hollow circles, pulse + drift */
+.ln-hub .ln-h-sat {
+  stroke: var(--hub-color);
+  stroke-width: 2;
+  fill: #fff;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: ln-hub-sat-pulse 3.2s ease-in-out infinite;
+}
+
+.ln-hub .ln-h-sat1 { animation-delay: 0s;    }
+.ln-hub .ln-h-sat2 { animation-delay: 0.22s; }
+.ln-hub .ln-h-sat3 { animation-delay: 0.44s; }
+.ln-hub .ln-h-sat4 { animation-delay: 0.66s; }
+
+@keyframes ln-hub-sat-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  30%       { transform: scale(1.35); opacity: 0.9; }
+  65%       { transform: scale(0.65); opacity: 0.4; }
+}
+
+
+/* ═══════════════════════════════════════════
+   GRID LAYOUT (optional convenience wrapper)
+   ─────────────────────────────────────────
+   <div class="ln-grid"> ... loaders ... </div>
+═══════════════════════════════════════════ */
+
+.ln-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: center;
+}

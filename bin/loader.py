@@ -151,6 +151,33 @@ def _load_task_information_cached(task_id):
     return {"value": task_details}
 
 
+@cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
+def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_weights_tuple, ppm_scale=None, mz_precision_floor=None):
+    """Memoized wrapper around _compute_scan_level_confidence.
+
+    Cache key: task_id + workflow_choice + resolved_workflow + score weights + ppm params.
+    TTL matches the library-match cache so results stay consistent.
+    """
+    from .scorer import _compute_scan_level_confidence  # local import avoids circular dep
+
+    matches_df = _load_library_matches(task_id, workflow_choice)
+    if matches_df is None or matches_df.empty:
+        return None
+
+    score_weights = dict(score_weights_tuple)
+    summary_df = _compute_scan_level_confidence(
+        matches_df,
+        task_id=task_id,
+        workflow_choice=resolved_workflow,
+        score_weights=score_weights,
+        ppm_scale=ppm_scale,
+        mz_precision_floor=mz_precision_floor,
+    )
+    if summary_df is None or len(summary_df) == 0:
+        return None
+    return summary_df.to_json(orient="split")
+
+
 def _load_task_information(task_id):
     task_id = (task_id or "").strip()
     if not task_id:
