@@ -291,7 +291,7 @@ class TestSharedPeaksNormalization:
         })
 
     def _patch(self, monkeypatch, peak_count):
-        monkeypatch.setattr("bin.scorer.get_query_peak_count_from_mgf", lambda t, s: peak_count)
+        monkeypatch.setattr("bin.scorer.get_filtered_query_peak_count_from_mgf", lambda t, s, **kw: peak_count)
         monkeypatch.setattr("bin.scorer.get_query_entropy_from_mgf", lambda t, s: None)
         monkeypatch.setattr("bin.scorer._get_query_entropy_from_usi", lambda u: None)
 

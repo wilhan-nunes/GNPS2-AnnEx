@@ -17,7 +17,8 @@ from .normalizer import (
 )
 from .tanimoto import _canonical_smiles, compute_cross_group_tanimoto, scan_tanimoto
 from .wcrs import Subgroup, wcrs
-from .mgf_loader import get_query_entropy_from_mgf, get_query_peak_count_from_mgf, _entropy_label
+from .mgf_loader import get_query_entropy_from_mgf, get_filtered_query_peak_count_from_mgf, _entropy_label
+from .spectral_entropy_v2 import DEFAULT_NOISE_THRESHOLD, DEFAULT_MAX_PEAK_NUM
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +299,11 @@ def _compute_scan_level_confidence(
         # SharedPeaks: coverage fraction (shared / query_peak_count) when available,
         # falling back to soft normalisation x/(x+K) when query peak count is unknown.
         raw_shared_peaks = float(best["mean_shared_peaks"]) if not math.isnan(float(best["mean_shared_peaks"])) else 0.0
-        query_peak_count = get_query_peak_count_from_mgf(task_id, scan)
+        query_peak_count = get_filtered_query_peak_count_from_mgf(
+            task_id, scan,
+            noise_threshold=DEFAULT_NOISE_THRESHOLD,
+            max_peak_num=DEFAULT_MAX_PEAK_NUM,
+        )
         if query_peak_count is not None and query_peak_count > 0:
             shared_peaks_score = min(1.0, raw_shared_peaks / query_peak_count)
             shared_peaks_source = "coverage_fraction"

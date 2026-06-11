@@ -206,3 +206,29 @@ def get_query_peak_count_from_mgf(task_id: str, scan) -> int | None:
     if peaks is None:
         return None
     return len(peaks)
+
+
+def get_filtered_query_peak_count_from_mgf(
+    task_id: str,
+    scan,
+    noise_threshold: float = 0.01,
+    max_peak_num: int = 100,
+) -> int | None:
+    """
+    Like get_query_peak_count_from_mgf but applies the same noise filter and
+    peak cap the entropy module uses, so the denominator matches the effective
+    peak set GNPS2 uses for cosine matching.
+    """
+    spectra = _get_task_spectra(task_id)
+    if spectra is None:
+        return None
+    peaks = spectra.get(str(scan))
+    if not peaks:
+        return None
+    max_intensity = max(p[1] for p in peaks)
+    if max_intensity <= 0:
+        return len(peaks)
+    filtered = [p for p in peaks if p[1] >= noise_threshold * max_intensity]
+    if len(filtered) > max_peak_num:
+        filtered = sorted(filtered, key=lambda p: p[1], reverse=True)[:max_peak_num]
+    return len(filtered)

@@ -484,7 +484,7 @@ def _build_reliability_breakdown_panel(
             "weight": normalized_score_weights.get("shared_peaks", 0.0),
             "value": shared_peaks_score_val,
             "raw_primary": (
-                f"{raw_shared_peaks:.1f} / {query_peak_count} query peaks → {shared_peaks_score_val:.4f} (coverage fraction)"
+                f"{raw_shared_peaks:.1f} / {query_peak_count} filtered query peaks → {shared_peaks_score_val:.4f} (coverage fraction)"
                 if shared_peaks_source == "coverage_fraction" and query_peak_count
                 else f"{raw_shared_peaks:.1f} mean shared peaks → {shared_peaks_score_val:.4f} (soft-normalised x/(x+5))"
             ),
