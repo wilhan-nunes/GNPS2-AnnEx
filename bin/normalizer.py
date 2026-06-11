@@ -263,31 +263,44 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
 
     work_df = df.copy()
 
-    def _row_has_structure(row) -> bool:
-        return any(_is_valid_field(row.get(f)) for f in present_fields)
+    # Vectorized has_structure: any structure field non-empty/non-null per row.
+    _null_sentinel = {"", "nan", "none", "null", "n/a", "na"}
+    has_structure = pd.Series(False, index=work_df.index)
+    for f in present_fields:
+        has_structure |= ~work_df[f].astype(str).str.strip().str.lower().isin(_null_sentinel)
 
-    has_structure = work_df.apply(_row_has_structure, axis=1)
     if not has_structure.any():
         return work_df
 
-    # Build a per-name source record: {name → row dict} for unambiguous names.
+    # Pre-compute canonical keys for all structured rows in one apply pass so
+    # the groupby loop below never calls iterrows() + _canonical_structure_key
+    # per row (iterrows creates a pd.Series per row — O(N) Series allocation).
+    structured_df = work_df.loc[has_structure].copy()
+    structured_df["_tmp_key"] = structured_df.apply(_canonical_structure_key, axis=1)
+
+    # Pre-compute per-row field-valid counts outside the loop.
+    # Doing pandas string chains inside the groupby on tiny per-group slices
+    # (avg ~3 rows) would pay per-operation pandas overhead 6 000+ times over.
+    # Four full-column passes done here replace 6 000 × 4 tiny-slice passes.
+    _field_counts = sum(
+        (~structured_df[f].astype(str).str.strip().str.lower().isin(_null_sentinel)).astype(int)
+        for f in present_fields
+    )
+
+    # Build a per-name source record: {name → field dict} for unambiguous names.
     name_to_source: dict = {}
-    for name, group in work_df[has_structure].groupby("Compound_Name"):
+    for name, group in structured_df.groupby("Compound_Name"):
         name = str(name).strip()
         if not name or name.lower() in {"nan", "none"}:
             continue
         # Require all structured rows in the group to share the same canonical key.
-        keys = {_canonical_structure_key(row) for _, row in group.iterrows()}
-        keys.discard("UNKNOWN_STRUCTURE")
-        if len(keys) != 1:
+        valid_keys = set(group["_tmp_key"].unique()) - {"UNKNOWN_STRUCTURE"}
+        if len(valid_keys) != 1:
             # 0 → all resolved to UNKNOWN (no usable structure); >1 → ambiguous name
             continue
-        # Pick the row with the most non-empty structure fields as the source.
-        best_row = max(
-            (row for _, row in group.iterrows()),
-            key=lambda r: sum(1 for f in present_fields if _is_valid_field(r.get(f))),
-        )
-        name_to_source[name] = {f: best_row.get(f) for f in present_fields}
+        # Pick the row with the most non-empty structure fields.
+        best_idx = _field_counts.loc[group.index].idxmax()
+        name_to_source[name] = {f: group.at[best_idx, f] for f in present_fields}
 
     if not name_to_source:
         return work_df
@@ -315,13 +328,21 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
 
 def _annotate_support_groups(df):
     work_df = df.copy()
-    work_df["_positional_group_key"] = work_df.apply(
-        lambda row: _build_positional_isomer_group_key(
-            row.get("INCHI", ""),
-            row.get("Smiles", ""),
-        ),
-        axis=1,
-    )
+
+    # Deduplicate (INCHI, Smiles) pairs before computing scaffold keys.
+    # The lru_cache deduplicates at the RDKit level but the per-row apply
+    # still pays Python dispatch + cache-lookup overhead for every cache hit.
+    # Building the map from unique pairs and then doing a list-comprehension
+    # lookup eliminates that overhead for the ~83% of rows that are cache hits.
+    inchi_s = work_df["INCHI"].astype(str) if "INCHI" in work_df.columns else pd.Series("", index=work_df.index)
+    smiles_s = work_df["Smiles"].astype(str) if "Smiles" in work_df.columns else pd.Series("", index=work_df.index)
+    pair_tuples = list(zip(inchi_s, smiles_s))
+    unique_pairs = list(dict.fromkeys(pair_tuples))
+    key_map = {
+        (inchi, smiles): _build_positional_isomer_group_key(inchi, smiles)
+        for inchi, smiles in unique_pairs
+    }
+    work_df["_positional_group_key"] = [key_map[p] for p in pair_tuples]
 
     exact_to_positional = {}
     if "_structure_key" in work_df.columns:

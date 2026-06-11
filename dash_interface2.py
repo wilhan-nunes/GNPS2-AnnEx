@@ -11,6 +11,7 @@ import dash_bootstrap_components as dbc
 from app import app
 from components import (
     _build_detail_panel,
+    _build_masst_section,
     _build_tanimoto_heatmap_figure,
     _compute_monoisotopic_mass,
     _format_workflow_label,
@@ -28,6 +29,7 @@ from bin.loader import (
     _load_library_matches,
     _load_task_information,
     _compute_scores_cached,
+    load_retention_times,
 )
 from bin.scorer import DEFAULT_SCORE_WEIGHTS, _normalize_score_weights
 
@@ -83,6 +85,14 @@ _SUMMARY_COLUMN_DEFS = [
         "type": "numericColumn",
         "filter": "agNumberColumnFilter",
         "valueGetter": {"function": "Number(params.data.scan)"},
+    },
+    {
+        "headerName": "RT (min)",
+        "field": "retention_time",
+        "maxWidth": 100,
+        "type": "numericColumn",
+        "filter": "agNumberColumnFilter",
+        "headerTooltip": "Retention time in minutes from the FBMN feature table. Only available for FBMN workflows.",
     },
     {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
     {
@@ -1014,6 +1024,7 @@ BODY = dbc.Container(
         dcc.Store(id="matches-store", storage_type="memory"),
         dcc.Store(id="run-params-store", storage_type="memory"),
         dcc.Store(id="scan-data-store", storage_type="memory"),
+        dcc.Store(id="masst-params-store", storage_type="memory"),
         dcc.Store(id="pubchem-overrides-store", storage_type="memory"),
         dcc.Download(id="download-summary"),
         INFO_MODAL,
@@ -1179,6 +1190,7 @@ def toggle_controls_for_detail_view(search):
         Output("detail-compounds-panel", "children"),
         Output("detail-masst-panel", "children"),
         Output("scan-data-store", "data"),
+        Output("masst-params-store", "data"),
     ],
     [Input("url", "search")],
 )
@@ -1186,7 +1198,7 @@ def render_detail_panel(search):
     query_state = _parse_dashboard_query(search)
 
     if not query_state["detail_mode"]:
-        return html.Div(), html.Div(), html.Div(), None
+        return html.Div(), html.Div(), html.Div(), None, None
 
     task_id = query_state["task_id"]
     scan = query_state["scan"]
@@ -1204,10 +1216,11 @@ def render_detail_panel(search):
             html.Div(),
             html.Div(),
             None,
+            None,
         )
 
     try:
-        panel_ui, compounds_data = _build_detail_panel(
+        panel_ui, compounds_data, per_compound_masst = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
@@ -1215,15 +1228,17 @@ def render_detail_panel(search):
             precomputed_query_entropy=precomputed_query_entropy,
             ppm_scale=ppm_scale,
             mz_precision_floor=ppm_floor,
+            skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else html.Div()
         compounds_panel = html.Div(children[1:3]) if len(children) > 1 else html.Div()
-        masst_panel = children[3] if len(children) > 3 else html.Div()
+        masst_spinner = children[3] if len(children) > 3 else html.Div()
+        masst_params = [{"name": n, "block": b} for n, b in per_compound_masst]
         return (
             score_panel,
             compounds_panel,
-            masst_panel,
+            masst_spinner,
             {
                 "compounds": compounds_data,
                 "task_id": task_id,
@@ -1234,15 +1249,16 @@ def render_detail_panel(search):
                 "ppm_floor": ppm_floor,
                 "precomputed_query_entropy": precomputed_query_entropy,
             },
+            masst_params,
         )
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None
+        return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None, None
 
 
 @dash_app.callback(
     [
         Output("detail-score-panel", "children", allow_duplicate=True),
-        Output("detail-masst-panel", "children", allow_duplicate=True),
+        Output("masst-params-store", "data", allow_duplicate=True),
     ],
     [
         Input("scan-data-store", "data"),
@@ -1252,9 +1268,9 @@ def render_detail_panel(search):
     prevent_initial_call=True,
 )
 def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
-    """Update score panel and MASST card on PubChem selection without remounting the structure table."""
+    """Update score panel and queue a MASST reload on PubChem selection."""
     if not scan_data:
-        return html.Div(), html.Div()
+        return html.Div(), no_update
 
     task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
@@ -1271,10 +1287,10 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
     if not task_id or not scan:
-        return html.Div(), html.Div()
+        return html.Div(), no_update
 
     try:
-        panel_ui, _ = _build_detail_panel(
+        panel_ui, _, per_compound_masst = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
@@ -1284,13 +1300,30 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             precomputed_query_entropy=precomputed_query_entropy,
             ppm_scale=ppm_scale,
             mz_precision_floor=ppm_floor,
+            skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else panel_ui
-        masst_panel = children[3] if len(children) > 3 else html.Div()
-        return score_panel, masst_panel
+        masst_params = [{"name": n, "block": b} for n, b in per_compound_masst]
+        return score_panel, masst_params
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), html.Div()
+        return dbc.Alert(str(exc), color="danger"), no_update
+
+
+@dash_app.callback(
+    Output("detail-masst-panel", "children", allow_duplicate=True),
+    Input("masst-params-store", "data"),
+    prevent_initial_call=True,
+)
+def load_masst_panel(masst_params):
+    """Fetch MASST biological context asynchronously after the rest of the detail panel loads."""
+    if not masst_params:
+        return html.Div()
+    per_compound_masst = [(item["name"], item["block"]) for item in masst_params]
+    try:
+        return _build_masst_section(per_compound_masst)
+    except Exception as exc:
+        return dbc.Alert(f"MASST context unavailable: {exc}", color="warning")
 
 
 @dash_app.callback(
@@ -1484,6 +1517,16 @@ def compute_and_render_scores(matches_json, params):
         summary_df = pd.read_json(io.StringIO(summary_json), orient="split")
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
+
+    try:
+        rt_df = load_retention_times(task_id)
+        if rt_df is not None and not rt_df.empty:
+            summary_df = summary_df.merge(rt_df, on="scan", how="left")
+            summary_df["retention_time"] = summary_df["retention_time"].round(2)
+        else:
+            summary_df["retention_time"] = None
+    except Exception:
+        summary_df["retention_time"] = None
 
     if len(summary_df) == 0:
         return dbc.Alert(

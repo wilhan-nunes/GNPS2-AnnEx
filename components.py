@@ -6,6 +6,7 @@ import math
 import urllib.parse
 import urllib.request
 from difflib import SequenceMatcher
+from functools import lru_cache
 from io import BytesIO
 
 import dash_bootstrap_components as dbc
@@ -723,17 +724,10 @@ def _build_mirror_plot_link(query_usi, library_usi):
 MASST_API_URL = "https://masst-records.gnps2.org/masst_records.json?sql="
 
 
-def _fetch_masst_context(inchikey_first_blocks: list) -> pd.DataFrame:
-    """
-    Query the MASST records API for biological context of the given InChIKey first blocks.
-
-    Joins masst_table → library_table → redu_table to retrieve SampleType and
-    UBERONBodyPartName counts. Returns an empty DataFrame on failure.
-    """
-    blocks = [b for b in inchikey_first_blocks if b and len(b) >= 5]
-    if not blocks:
-        return pd.DataFrame(), ""
-
+@lru_cache(maxsize=256)
+def _fetch_masst_context_cached(blocks_tuple: tuple):
+    """Cached core of _fetch_masst_context. Accepts a sorted, deduped tuple of blocks."""
+    blocks = list(blocks_tuple)
     in_clause = ", ".join(f"'{b}'" for b in blocks)
     sql = f"""
 WITH filtered AS (
@@ -772,6 +766,19 @@ LIMIT 100
     except Exception:
         logger.debug("MASST context fetch failed for InChIKeys %s", blocks)
         return pd.DataFrame(), sql
+
+
+def _fetch_masst_context(inchikey_first_blocks: list):
+    """
+    Query the MASST records API for biological context of the given InChIKey first blocks.
+
+    Results are cached in-process (lru_cache) so repeated views of the same compound
+    don't pay the ~10 s HTTP round-trip each time.
+    """
+    blocks_tuple = tuple(sorted(set(b for b in inchikey_first_blocks if b and len(b) >= 5)))
+    if not blocks_tuple:
+        return pd.DataFrame(), ""
+    return _fetch_masst_context_cached(blocks_tuple)
 
 
 def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str = ""):
@@ -1184,6 +1191,34 @@ def _build_query_spectrum_card(query_usi: str, precomputed_entropy=None):
     )
 
 
+def _build_masst_section(per_compound_masst: list):
+    """Build the MASST/ReDU biological context card(s) from a list of (name, inchikey_block) pairs.
+
+    Separated from _build_detail_panel so it can be loaded asynchronously via a
+    dedicated Dash callback, allowing the rest of the detail panel to render immediately.
+    """
+    if len(per_compound_masst) == 1:
+        cname, fblock = per_compound_masst[0]
+        return _build_masst_context_card([fblock], compound_label=cname)
+    if len(per_compound_masst) > 1:
+        accordion_items = []
+        for cname, fblock in per_compound_masst:
+            inner = _build_masst_context_card([fblock], compound_label=cname)
+            accordion_items.append(
+                dbc.AccordionItem(inner, title=f"{cname} ({fblock})")
+            )
+        return dbc.Card(
+            [
+                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
+                dbc.CardBody(
+                    dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
+                ),
+            ],
+            className="mt-3",
+        )
+    return html.Div()
+
+
 def _build_detail_panel(
     task_id,
     scan,
@@ -1194,10 +1229,15 @@ def _build_detail_panel(
     precomputed_query_entropy=None,
     ppm_scale=None,
     mz_precision_floor=None,
+    skip_masst=False,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
+
+    # Use scan_filter to score only the rows for this one scan; much faster (~2 s) than
+    # scoring the full dataset (~24 s) when _compute_scores_cached is not already warm.
+    # If the main table was loaded first, the MGF lru_cache is warm and this drops to ~0.1 s.
     summary_df = _compute_scan_level_confidence(
         matches_df,
         task_id=task_id,
@@ -1639,8 +1679,9 @@ def _build_detail_panel(
         ]
     )
 
-    # Build per-structure MASST cards (deduplicated by InChIKey first block).
-    # If a PubChem SMILES override exists for a card, derive its InChIKey from that SMILES.
+    # Collect per-structure MASST params (deduplicated by InChIKey first block).
+    # The actual HTTP fetch is deferred to _build_masst_section, called later via
+    # a separate Dash callback so the rest of the panel renders immediately.
     seen_blocks: set = set()
     per_compound_masst = []
     for cidx, cname, cik in compound_masst_items:
@@ -1655,28 +1696,16 @@ def _build_detail_panel(
         seen_blocks.add(first_block)
         per_compound_masst.append((cname, first_block))
 
-    if len(per_compound_masst) == 1:
-        cname, fblock = per_compound_masst[0]
-        masst_card = _build_masst_context_card([fblock], compound_label=cname)
-    elif len(per_compound_masst) > 1:
-        accordion_items = []
-        for cname, fblock in per_compound_masst:
-            inner = _build_masst_context_card([fblock], compound_label=cname)
-            accordion_items.append(
-                dbc.AccordionItem(inner, title=f"{cname} ({fblock})")
-            )
-        masst_card = dbc.Card(
-            [
-                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
-                dbc.CardBody(
-                    dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
-                ),
-            ],
-            className="mt-3",
+    if skip_masst:
+        masst_card = dbc.Spinner(
+            html.Div(id="masst-loading-target"),
+            color="secondary",
+            size="sm",
+            spinner_class_name="me-2",
         )
     else:
-        masst_card = html.Div()
+        masst_card = _build_masst_section(per_compound_masst)
 
     spectrum_card = _build_query_spectrum_card(query_usi, precomputed_entropy=precomputed_query_entropy)
 
-    return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data
+    return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data, per_compound_masst
