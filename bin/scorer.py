@@ -23,18 +23,14 @@ from .spectral_entropy_v2 import DEFAULT_NOISE_THRESHOLD, DEFAULT_MAX_PEAK_NUM
 logger = logging.getLogger(__name__)
 
 # Weights are pre-normalised (sum = 1.0).
-# Nominal intent: structure 45 : tanimoto 15 : cosine_consistency 25 : max_cosine 15
-#                 shared_peaks 5 : library_diversity 5   (total 110)
-# max_cosine raised (10→15) to better discriminate correct vs wrong annotations.
 # library_diversity rewards consensus across independent source databases.
-# shared_peaks reduced (10→5) as it is strongly correlated with max_cosine.
 DEFAULT_SCORE_WEIGHTS = {
-    "structure_agreement": 45 / 110,
-    "tanimoto": 15 / 110,
-    "cosine_consistency": 25 / 110,
-    "max_cosine": 15 / 110,
-    "shared_peaks": 5 / 110,
-    "library_diversity": 5 / 110,
+    "structure_agreement": 40 / 100,
+    "tanimoto": 15 / 100,
+    "cosine_consistency": 20 / 100,
+    "max_cosine": 15 / 100,
+    "shared_peaks": 5 / 100,
+    "library_diversity": 5 / 100,
 }
 
 
