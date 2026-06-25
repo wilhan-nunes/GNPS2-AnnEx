@@ -115,8 +115,30 @@ def _normalize_library_matches_dataframe(df):
         if matched_column is not None:
             work_df = work_df.rename(columns={matched_column: canonical_name})
 
+    work_df = _derive_smiles_from_inchi(work_df)
     work_df = _propagate_structure_by_name(work_df)
     return work_df
+
+
+def _derive_smiles_from_inchi(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing Smiles by converting INCHI via RDKit for rows that have one."""
+    if "INCHI" not in df.columns or "Smiles" not in df.columns:
+        return df
+    _null = {"", "nan", "none", "null", "n/a", "na"}
+    missing_smiles = df["Smiles"].astype(str).str.strip().str.lower().isin(_null)
+    has_inchi = ~df["INCHI"].astype(str).str.strip().str.lower().isin(_null)
+    derived = 0
+    for idx in df.index[missing_smiles & has_inchi]:
+        try:
+            mol = MolFromInchi(str(df.at[idx, "INCHI"]))
+            if mol is not None:
+                df.at[idx, "Smiles"] = Chem.MolToSmiles(mol)
+                derived += 1
+        except Exception:
+            pass
+    if derived:
+        logger.debug("_derive_smiles_from_inchi: derived SMILES for %d row(s)", derived)
+    return df
 
 
 _STRUCTURE_FIELDS = ["Smiles", "InChIKey", "InChIKey-Planar", "INCHI"]
@@ -287,11 +309,17 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
         for f in present_fields
     )
 
-    # Build a per-name source record: {name → field dict} for unambiguous names.
+    # Build a per-name source record using case-insensitive matching.
+    # Grouping on a lowercased copy keeps the ambiguity guard intact: e.g. "X"
+    # with structure A and "x" with structure B land in the same group and are
+    # correctly rejected when their canonical keys differ.
+    structured_df["_tmp_name_lower"] = (
+        structured_df["Compound_Name"].astype(str).str.strip().str.lower()
+    )
     name_to_source: dict = {}
-    for name, group in structured_df.groupby("Compound_Name"):
-        name = str(name).strip()
-        if not name or name.lower() in {"nan", "none"}:
+    for name_lower, group in structured_df.groupby("_tmp_name_lower"):
+        name_lower = str(name_lower).strip()
+        if not name_lower or name_lower in {"nan", "none"}:
             continue
         # Require all structured rows in the group to share the same canonical key.
         valid_keys = set(group["_tmp_key"].unique()) - {"UNKNOWN_STRUCTURE"}
@@ -300,23 +328,29 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
             continue
         # Pick the row with the most non-empty structure fields.
         best_idx = _field_counts.loc[group.index].idxmax()
-        name_to_source[name] = {f: group.at[best_idx, f] for f in present_fields}
+        name_to_source[name_lower] = {f: group.at[best_idx, f] for f in present_fields}
 
     if not name_to_source:
         return work_df
 
-    needs_structure = ~has_structure
-    if not needs_structure.any():
+    # Target: rows missing at least one structure field (not only rows missing all fields).
+    # This lets a row that has InChI but no SMILES receive SMILES from a named sibling.
+    needs_any_field = pd.Series(False, index=work_df.index)
+    for f in present_fields:
+        needs_any_field |= work_df[f].astype(str).str.strip().str.lower().isin(_null_sentinel)
+
+    if not needs_any_field.any():
         return work_df
 
     filled = 0
-    for idx in work_df.index[needs_structure]:
-        name = str(work_df.at[idx, "Compound_Name"]).strip()
+    for idx in work_df.index[needs_any_field]:
+        name = str(work_df.at[idx, "Compound_Name"]).strip().lower()
         source = name_to_source.get(name)
         if source is None:
             continue
         for field, value in source.items():
-            if _is_valid_field(value):
+            # Never overwrite a field that already carries valid data.
+            if _is_valid_field(value) and not _is_valid_field(work_df.at[idx, field]):
                 work_df.at[idx, field] = value
         filled += 1
 
