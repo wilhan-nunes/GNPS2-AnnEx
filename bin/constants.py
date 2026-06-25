@@ -8,10 +8,11 @@ LIBRARY_RESULTS_CACHE_TIMEOUT_SEC = 86400
 # SharedPeaks normalisation: x / (x + K) maps raw peak counts to [0, 1].
 K_SHARED_PEAKS = 5
 
-# MZErrorPPM multiplicative precision factor: exp(-|ppm| / PPM_SCALE).
-# MZ_PRECISION_FLOOR prevents over-penalising low-resolution instruments.
-PPM_SCALE = 10.0
-MZ_PRECISION_FLOOR = 0.5
+# MZ precision factor: f + (1−f)·exp(−max(0, |ppm|−t)² / (2·S²))
+# Full credit within the tolerance band; Gaussian decay beyond it.
+PPM_TOLERANCE = 5.0   # t — tolerance threshold (ppm), fixed
+PPM_SIGMA = 10.0      # S — Gaussian decay width (ppm), adjustable
+PPM_FLOOR = 0.5       # f — minimum factor, adjustable
 
 # Library diversity soft-cap: min(unique_source_libraries, K) / K → [0, 1].
 K_LIBRARY_DIVERSITY = 5

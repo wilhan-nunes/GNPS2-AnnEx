@@ -20,7 +20,7 @@ from components import (
     _search_pubchem_candidates,
 )
 from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
-from bin.constants import SUPPORTED_WORKFLOWS, PPM_SCALE, MZ_PRECISION_FLOOR
+from bin.constants import SUPPORTED_WORKFLOWS, PPM_SIGMA, PPM_FLOOR
 import io
 
 import pandas as pd
@@ -356,7 +356,7 @@ _SUMMARY_COLUMN_DEFS = [
         "headerName": "MZ Precision Factor",
         "field": "mz_precision",
         "maxWidth": 145,
-        "headerTooltip": "Multiplicative factor applied to the base score based on MZErrorPPM. exp(-|ppm| / 10), floored at 0.5. 1.0 = no penalty.",
+        "headerTooltip": "Multiplicative factor applied to the base score. Formula: f + (1−f)·exp(−max(0,|ppm|−t)²/(2·S²)); t=5 ppm, S=10, f=0.5 by default. 1.0 = no penalty.",
         "cellStyle": {"textAlign": "center"},
     },
 ]
@@ -569,56 +569,56 @@ def _serialize_score_weights_for_query(score_weights=None):
 
 
 def _parse_ppm_from_query(query_dict):
-    ppm_scale_raw = _get_url_param(query_dict, "ppm_scale", "").strip()
+    ppm_sigma_raw = _get_url_param(query_dict, "ppm_sigma", "").strip()
     ppm_floor_raw = _get_url_param(query_dict, "ppm_floor", "").strip()
     try:
-        ppm_scale = float(ppm_scale_raw) if ppm_scale_raw else PPM_SCALE
-        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
-            ppm_scale = PPM_SCALE
+        ppm_sigma = float(ppm_sigma_raw) if ppm_sigma_raw else PPM_SIGMA
+        if not (math.isfinite(ppm_sigma) and ppm_sigma > 0):
+            ppm_sigma = PPM_SIGMA
     except (ValueError, TypeError):
-        ppm_scale = PPM_SCALE
+        ppm_sigma = PPM_SIGMA
     try:
-        ppm_floor = float(ppm_floor_raw) if ppm_floor_raw else MZ_PRECISION_FLOOR
+        ppm_floor = float(ppm_floor_raw) if ppm_floor_raw else PPM_FLOOR
         if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
-            ppm_floor = MZ_PRECISION_FLOOR
+            ppm_floor = PPM_FLOOR
     except (ValueError, TypeError):
-        ppm_floor = MZ_PRECISION_FLOOR
-    return ppm_scale, ppm_floor
+        ppm_floor = PPM_FLOOR
+    return ppm_sigma, ppm_floor
 
 
-def _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value):
+def _parse_ppm_from_inputs(ppm_sigma_value, ppm_floor_value):
     try:
-        ppm_scale = float(ppm_scale_value) if ppm_scale_value is not None else PPM_SCALE
-        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
-            ppm_scale = PPM_SCALE
+        ppm_sigma = float(ppm_sigma_value) if ppm_sigma_value is not None else PPM_SIGMA
+        if not (math.isfinite(ppm_sigma) and ppm_sigma > 0):
+            ppm_sigma = PPM_SIGMA
     except (ValueError, TypeError):
-        ppm_scale = PPM_SCALE
+        ppm_sigma = PPM_SIGMA
     try:
         ppm_floor = (
             float(ppm_floor_value)
             if ppm_floor_value is not None
-            else MZ_PRECISION_FLOOR
+            else PPM_FLOOR
         )
         if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
-            ppm_floor = MZ_PRECISION_FLOOR
+            ppm_floor = PPM_FLOOR
     except (ValueError, TypeError):
-        ppm_floor = MZ_PRECISION_FLOOR
-    return ppm_scale, ppm_floor
+        ppm_floor = PPM_FLOOR
+    return ppm_sigma, ppm_floor
 
 
-def _ppm_params_are_default(ppm_scale, ppm_floor):
+def _ppm_params_are_default(ppm_sigma, ppm_floor):
     return (
-        abs(float(ppm_scale) - PPM_SCALE) < 1e-6
-        and abs(float(ppm_floor) - MZ_PRECISION_FLOOR) < 1e-6
+        abs(float(ppm_sigma) - PPM_SIGMA) < 1e-6
+        and abs(float(ppm_floor) - PPM_FLOOR) < 1e-6
     )
 
 
-def _serialize_ppm_for_query(ppm_scale, ppm_floor):
+def _serialize_ppm_for_query(ppm_sigma, ppm_floor):
     suffix = ""
-    if not _ppm_params_are_default(ppm_scale, ppm_floor):
-        if abs(float(ppm_scale) - PPM_SCALE) >= 1e-6:
-            suffix += f"&ppm_scale={float(ppm_scale):.6g}"
-        if abs(float(ppm_floor) - MZ_PRECISION_FLOOR) >= 1e-6:
+    if not _ppm_params_are_default(ppm_sigma, ppm_floor):
+        if abs(float(ppm_sigma) - PPM_SIGMA) >= 1e-6:
+            suffix += f"&ppm_sigma={float(ppm_sigma):.6g}"
+        if abs(float(ppm_floor) - PPM_FLOOR) >= 1e-6:
             suffix += f"&ppm_floor={float(ppm_floor):.6g}"
     return suffix
 
@@ -669,7 +669,7 @@ def _build_score_weight_controls():
             dbc.Col(
                 [
                     dbc.Label(
-                        "PPM penalty scale",
+                        "PPM sigma (S)",
                         html_for="ppm-scale",
                         className="small fw-semibold text-uppercase text-muted mb-1",
                     ),
@@ -679,7 +679,7 @@ def _build_score_weight_controls():
                         min=1,
                         max=200,
                         step=0.5,
-                        value=PPM_SCALE,
+                        value=PPM_SIGMA,
                         style={"borderColor": "rgba(0,0,0,0.12)"},
                         size="sm",
                     ),
@@ -699,7 +699,7 @@ def _build_score_weight_controls():
                         min=0,
                         max=1,
                         step=0.05,
-                        value=MZ_PRECISION_FLOOR,
+                        value=PPM_FLOOR,
                         style={"borderColor": "rgba(0,0,0,0.12)"},
                         size="sm",
                     ),
@@ -768,13 +768,13 @@ def _parse_dashboard_query(search):
         precomputed_query_entropy = None
 
     score_weights = _parse_score_weights_from_query(query_dict)
-    ppm_scale, ppm_floor = _parse_ppm_from_query(query_dict)
+    ppm_sigma, ppm_floor = _parse_ppm_from_query(query_dict)
 
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
         "workflow_choice": workflow_choice,
         "score_weights": score_weights,
-        "ppm_scale": ppm_scale,
+        "ppm_sigma": ppm_sigma,
         "ppm_floor": ppm_floor,
         "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
         "scan": _get_url_param(query_dict, "scan", "").strip(),
@@ -1169,7 +1169,7 @@ def determine_task_from_url(search):
         score_weight_inputs["max_cosine"],
         score_weight_inputs["shared_peaks"],
         score_weight_inputs["library_diversity"],
-        query_state["ppm_scale"],
+        query_state["ppm_sigma"],
         query_state["ppm_floor"],
     )
 
@@ -1205,7 +1205,7 @@ def render_detail_panel(search):
     workflow_choice = query_state["workflow_choice"]
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
     score_weights = query_state["score_weights"]
-    ppm_scale = query_state["ppm_scale"]
+    ppm_sigma = query_state["ppm_sigma"]
     ppm_floor = query_state["ppm_floor"]
 
     if not task_id or not scan:
@@ -1226,8 +1226,8 @@ def render_detail_panel(search):
             workflow_choice,
             score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
             skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
@@ -1245,7 +1245,7 @@ def render_detail_panel(search):
                 "scan": scan,
                 "workflow_choice": workflow_choice,
                 "score_weights": score_weights,
-                "ppm_scale": ppm_scale,
+                "ppm_sigma": ppm_sigma,
                 "ppm_floor": ppm_floor,
                 "precomputed_query_entropy": precomputed_query_entropy,
             },
@@ -1278,8 +1278,8 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
         str(scan_data.get("workflow_choice", "auto")), max_length=40
     )
     score_weights = _normalize_score_weights(scan_data.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        scan_data.get("ppm_scale"), scan_data.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        scan_data.get("ppm_sigma"), scan_data.get("ppm_floor")
     )
     use_pubchem_for_score = (
         isinstance(pubchem_value, list) and "enabled" in pubchem_value
@@ -1298,8 +1298,8 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
             precomputed_query_entropy=precomputed_query_entropy,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
             skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
@@ -1367,7 +1367,7 @@ def load_library_matches_callback(
     max_cosine_weight_value,
     shared_peaks_weight_value,
     library_diversity_weight_value,
-    ppm_scale_value,
+    ppm_sigma_value,
     ppm_floor_value,
 ):
     """Stage 1 — fetch library matches and report what was found."""
@@ -1382,7 +1382,7 @@ def load_library_matches_callback(
         task_id = query_state["task_id"]
         workflow_choice = query_state["workflow_choice"]
         score_weights = query_state["score_weights"]
-        ppm_scale = query_state["ppm_scale"]
+        ppm_sigma = query_state["ppm_sigma"]
         ppm_floor = query_state["ppm_floor"]
     else:
         task_id = (task_id or "").strip()
@@ -1395,7 +1395,7 @@ def load_library_matches_callback(
             shared_peaks_weight_value,
             library_diversity_weight_value,
         )
-        ppm_scale, ppm_floor = _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value)
+        ppm_sigma, ppm_floor = _parse_ppm_from_inputs(ppm_sigma_value, ppm_floor_value)
 
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
@@ -1470,7 +1470,7 @@ def load_library_matches_callback(
         "workflow_choice": workflow_choice,
         "resolved_workflow": resolved_workflow,
         "score_weights": score_weights,
-        "ppm_scale": ppm_scale,
+        "ppm_sigma": ppm_sigma,
         "ppm_floor": ppm_floor,
         "task_info": task_info,
     }
@@ -1492,13 +1492,13 @@ def compute_and_render_scores(matches_json, params):
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        params.get("ppm_scale"), params.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_sigma"), params.get("ppm_floor")
     )
     task_info = params.get("task_info") or {}
     custom_score_weights_active = not _score_weights_are_default(score_weights)
     score_weight_query_suffix = _serialize_score_weights_for_query(score_weights)
-    ppm_query_suffix = _serialize_ppm_for_query(ppm_scale, ppm_floor)
+    ppm_query_suffix = _serialize_ppm_for_query(ppm_sigma, ppm_floor)
 
     try:
         score_weights_tuple = tuple(sorted(score_weights.items()))
@@ -1507,8 +1507,8 @@ def compute_and_render_scores(matches_json, params):
             workflow_choice,
             resolved_workflow,
             score_weights_tuple,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
         )
         if summary_json is None:
             return dbc.Alert(
@@ -1757,8 +1757,8 @@ def download_summary_csv(n_clicks, matches_json, params):
     task_id = params.get("task_id", "unknown")
     resolved_workflow = params.get("resolved_workflow", "auto")
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        params.get("ppm_scale"), params.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_sigma"), params.get("ppm_floor")
     )
 
     try:
@@ -1769,8 +1769,8 @@ def download_summary_csv(n_clicks, matches_json, params):
             workflow_choice,
             resolved_workflow,
             score_weights_tuple,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
         )
         if summary_json is None:
             return no_update

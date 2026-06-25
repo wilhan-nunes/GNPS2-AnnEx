@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY, PPM_SCALE, MZ_PRECISION_FLOOR
+from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY, PPM_SIGMA, PPM_FLOOR, PPM_TOLERANCE
 from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
@@ -128,8 +128,8 @@ def _compute_scan_level_confidence(
     workflow_choice="auto",
     scan_filter=None,
     score_weights=None,
-    ppm_scale=None,
-    mz_precision_floor=None,
+    ppm_sigma=None,
+    ppm_floor=None,
 ):
     scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
@@ -183,17 +183,17 @@ def _compute_scan_level_confidence(
     normalized_score_weights = _normalize_score_weights(score_weights)
 
     try:
-        _ppm_scale = float(ppm_scale) if ppm_scale is not None else PPM_SCALE
-        if not (math.isfinite(_ppm_scale) and _ppm_scale > 0):
-            _ppm_scale = PPM_SCALE
+        _ppm_sigma = float(ppm_sigma) if ppm_sigma is not None else PPM_SIGMA
+        if not (math.isfinite(_ppm_sigma) and _ppm_sigma > 0):
+            _ppm_sigma = PPM_SIGMA
     except (TypeError, ValueError):
-        _ppm_scale = PPM_SCALE
+        _ppm_sigma = PPM_SIGMA
     try:
-        _mz_precision_floor = float(mz_precision_floor) if mz_precision_floor is not None else MZ_PRECISION_FLOOR
-        if not (math.isfinite(_mz_precision_floor) and 0.0 <= _mz_precision_floor <= 1.0):
-            _mz_precision_floor = MZ_PRECISION_FLOOR
+        _ppm_floor = float(ppm_floor) if ppm_floor is not None else PPM_FLOOR
+        if not (math.isfinite(_ppm_floor) and 0.0 <= _ppm_floor <= 1.0):
+            _ppm_floor = PPM_FLOOR
     except (TypeError, ValueError):
-        _mz_precision_floor = MZ_PRECISION_FLOOR
+        _ppm_floor = PPM_FLOOR
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -225,7 +225,7 @@ def _compute_scan_level_confidence(
                 mean_shared_peaks=("_shared_peaks", "mean"),
                 median_abs_ppm=("_abs_ppm", "median"),
             )
-            .sort_values(["count", "mean_cosine", "max_cosine"], ascending=False)
+            .sort_values(["count", "max_cosine", "mean_cosine"], ascending=False)
         )
 
         # Extract one representative SMILES per support group (highest-cosine hit).
@@ -279,8 +279,7 @@ def _compute_scan_level_confidence(
         structure_hits = scan_df[scan_df["_support_group_key"] == support_group_key]
         representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
         structure_key = representative_row.get("_structure_key", "UNKNOWN_STRUCTURE")
-        _mode = structure_hits["_compound"].mode()
-        top_compound = _mode.iloc[0] if len(_mode) > 0 else ""
+        top_compound = str(representative_row["_compound"])
 
         # Identify the hit with the globally highest cosine across ALL groups.
         _global_best_idx = scan_df["_cosine"].idxmax()
@@ -317,12 +316,13 @@ def _compute_scan_level_confidence(
                     unique_libs.add(lib)
             library_diversity_score = min(len(unique_libs), K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY
 
-        # MZErrorPPM: multiplicative precision factor, floored to avoid over-penalising low-res instruments
+        # MZ precision: Gaussian decay beyond tolerance band; full credit within t ppm
         raw_abs_ppm = float(best["median_abs_ppm"])
         if math.isnan(raw_abs_ppm) or mz_error_col is None:
             mz_precision = 1.0  # no data → no penalty
         else:
-            mz_precision = max(_mz_precision_floor, math.exp(-raw_abs_ppm / _ppm_scale))
+            _excess = max(0.0, raw_abs_ppm - PPM_TOLERANCE)
+            mz_precision = _ppm_floor + (1.0 - _ppm_floor) * math.exp(-(_excess ** 2) / (2.0 * _ppm_sigma ** 2))
 
         # Always build query_usi (needed for entropy similarity and USI fallback).
         representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))

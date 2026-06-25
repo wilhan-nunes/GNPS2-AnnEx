@@ -1227,8 +1227,8 @@ def _build_detail_panel(
     pubchem_overrides=None,
     use_pubchem_for_score=False,
     precomputed_query_entropy=None,
-    ppm_scale=None,
-    mz_precision_floor=None,
+    ppm_sigma=None,
+    ppm_floor=None,
     skip_masst=False,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
@@ -1244,8 +1244,8 @@ def _build_detail_panel(
         workflow_choice=resolved_workflow,
         scan_filter=scan,
         score_weights=normalized_score_weights,
-        ppm_scale=ppm_scale,
-        mz_precision_floor=mz_precision_floor,
+        ppm_sigma=ppm_sigma,
+        ppm_floor=ppm_floor,
     )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
