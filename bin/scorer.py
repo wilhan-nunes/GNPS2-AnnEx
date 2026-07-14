@@ -5,7 +5,11 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY, PPM_SIGMA, PPM_FLOOR, PPM_TOLERANCE
+from .constants import (
+    ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY,
+    PPM_SIGMA, PPM_FLOOR, PPM_TOLERANCE, PPM_GATE_MODE,
+    SUPPORT_ALPHA, SUPPORT_BETA,
+)
 from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
@@ -130,6 +134,7 @@ def _compute_scan_level_confidence(
     score_weights=None,
     ppm_sigma=None,
     ppm_floor=None,
+    ppm_gate_mode=None,
 ):
     scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
@@ -194,6 +199,10 @@ def _compute_scan_level_confidence(
             _ppm_floor = PPM_FLOOR
     except (TypeError, ValueError):
         _ppm_floor = PPM_FLOOR
+    try:
+        _ppm_gate_mode = bool(ppm_gate_mode) if ppm_gate_mode is not None else PPM_GATE_MODE
+    except (TypeError, ValueError):
+        _ppm_gate_mode = PPM_GATE_MODE
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -255,7 +264,8 @@ def _compute_scan_level_confidence(
             tanimoto_score: float = winner_wcrs.avg_similarity
             tanimoto_source: str = "tanimoto_wcrs"
         elif len(wcrs_subgroups) == 1 and any(v is not None for v in group_rep_smiles.values()):
-            tanimoto_score = 1.0
+            # Single structure group: Bayesian-shrunk quality signal (avoids trivial 1.0 for low-n scans).
+            tanimoto_score = (total_matches + SUPPORT_ALPHA) / (total_matches + SUPPORT_ALPHA + SUPPORT_BETA)
             tanimoto_source = "single_structure"
         else:
             # No usable SMILES — fall back to count-based support fraction.
@@ -287,7 +297,8 @@ def _compute_scan_level_confidence(
         _global_top_compound = scan_df.at[_global_best_idx, "_compound"]
         top_cosine_overridden = bool(_global_top_group != support_group_key)
 
-        support_fraction = best["count"] / total_matches if total_matches else 0.0
+        # Bayesian shrinkage: (supporting + α) / (total + α + β) shrinks toward 0.5 for low-n scans.
+        support_fraction = (best["count"] + SUPPORT_ALPHA) / (total_matches + SUPPORT_ALPHA + SUPPORT_BETA) if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
 
@@ -316,10 +327,12 @@ def _compute_scan_level_confidence(
                     unique_libs.add(lib)
             library_diversity_score = min(len(unique_libs), K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY
 
-        # MZ precision: Gaussian decay beyond tolerance band; full credit within t ppm
+        # MZ precision: step gate (default) or Gaussian decay beyond tolerance band.
         raw_abs_ppm = float(best["median_abs_ppm"])
         if math.isnan(raw_abs_ppm) or mz_error_col is None:
             mz_precision = 1.0  # no data → no penalty
+        elif _ppm_gate_mode:
+            mz_precision = 1.0 if raw_abs_ppm <= PPM_TOLERANCE else _ppm_floor
         else:
             _excess = max(0.0, raw_abs_ppm - PPM_TOLERANCE)
             mz_precision = _ppm_floor + (1.0 - _ppm_floor) * math.exp(-(_excess ** 2) / (2.0 * _ppm_sigma ** 2))
@@ -337,14 +350,17 @@ def _compute_scan_level_confidence(
         if q_entropy_result is not None:
             query_entropy, query_entropy_label = q_entropy_result
 
-        # Cosine consistency: 1 − clamp(std/mean, 0, 1). Single-hit groups get 1.0.
+        # Cosine consistency: 1 − clamp(std/mean, 0, 1).
+        # Single-hit groups have no variance to measure — set to 0.0 (undefined).
+        # max_cosine carries the spectral signal for those scans.
         _std_cosine = float(best["std_cosine"])
         if math.isnan(_std_cosine) or int(best["count"]) < 2:
-            cosine_consistency = 1.0
+            cosine_consistency = 0.0
+            cosine_consistency_source = "single_hit_undefined"
         else:
             cv = _std_cosine / mean_cosine if mean_cosine > 0 else 1.0
             cosine_consistency = max(0.0, 1.0 - min(1.0, cv))
-        cosine_consistency_source = "cosine_consistency"
+            cosine_consistency_source = "cosine_consistency"
 
         confidence_score = _compute_confidence_score(
             support_fraction,

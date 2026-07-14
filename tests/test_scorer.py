@@ -48,11 +48,12 @@ class TestConfidenceCategory:
 
 class TestScoreWeightHelpers:
     def test_percentage_weights_normalize_to_defaults(self):
-        # Nominal percentages 45:15:25:15:5:5 should normalize to DEFAULT_SCORE_WEIGHTS.
+        # Nominal percentages 40:15:20:15:5:5 (= DEFAULT_SCORE_WEIGHTS × 100) should
+        # normalize back to DEFAULT_SCORE_WEIGHTS.
         normalized = _normalize_score_weights({
-            "structure_agreement": 45,
+            "structure_agreement": 40,
             "tanimoto": 15,
-            "cosine_consistency": 25,
+            "cosine_consistency": 20,
             "max_cosine": 15,
             "shared_peaks": 5,
             "library_diversity": 5,
@@ -187,14 +188,16 @@ class TestComputeScanLevelConfidence:
         assert scores == sorted(scores, reverse=True)
 
     def test_percentage_style_weights_match_default_scores(self, mixed_structure_df):
+        # Passing explicit weights matching DEFAULT_SCORE_WEIGHTS ratios (40:15:20:15:5:5)
+        # should produce identical scores to passing no weights at all.
         baseline = _compute_scan_level_confidence(
             mixed_structure_df,         )
         reweighted = _compute_scan_level_confidence(
             mixed_structure_df,
             score_weights={
-                "structure_agreement": 45,
+                "structure_agreement": 40,
                 "tanimoto": 15,
-                "cosine_consistency": 25,
+                "cosine_consistency": 20,
                 "max_cosine": 15,
                 "shared_peaks": 5,
                 "library_diversity": 5,
@@ -219,7 +222,8 @@ class TestComputeScanLevelConfidence:
             },
         )
         scan_10 = result[result["scan"] == "10"].iloc[0]
-        assert scan_10["confidence_score"] == pytest.approx(66.7, abs=0.1)
+        # Bayesian-shrunk support_fraction: (2+1)/(3+2) = 0.60 → score = 60.0
+        assert scan_10["confidence_score"] == pytest.approx(60.0, abs=0.1)
 
 
 # ── WCRS integration ──────────────────────────────────────────────────────────
@@ -258,8 +262,9 @@ class TestWcrsIntegration:
         assert (result["confidence_score"] >= 0.0).all()
         assert (result["confidence_score"] <= 100.0).all()
 
-    def test_cosine_consistency_single_hit_is_one(self):
-        """A support group with exactly one hit has no variance → consistency = 1.0."""
+    def test_cosine_consistency_single_hit_is_zero(self):
+        """A support group with exactly one hit has no variance — consistency is 0.0 (undefined).
+        max_cosine carries the spectral evidence for single-hit scans."""
         import pandas as pd
         from tests.conftest import CAFFEINE_SMILES
         df = pd.DataFrame({
@@ -270,8 +275,8 @@ class TestWcrsIntegration:
             "InChIKey-Planar": ["RYYVLZVUVIJVGH"],
         })
         result = _compute_scan_level_confidence(df)
-        assert result.iloc[0]["cosine_consistency"] == pytest.approx(1.0)
-        assert result.iloc[0]["cosine_consistency_source"] == "cosine_consistency"
+        assert result.iloc[0]["cosine_consistency"] == pytest.approx(0.0)
+        assert result.iloc[0]["cosine_consistency_source"] == "single_hit_undefined"
 
     def test_cosine_consistency_in_bounds(self, mixed_structure_df):
         result = _compute_scan_level_confidence(mixed_structure_df)

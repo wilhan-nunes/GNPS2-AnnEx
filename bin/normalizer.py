@@ -115,8 +115,10 @@ def _normalize_library_matches_dataframe(df):
         if matched_column is not None:
             work_df = work_df.rename(columns={matched_column: canonical_name})
 
+    work_df = _harmonize_metadata(work_df)
     work_df = _derive_smiles_from_inchi(work_df)
     work_df = _propagate_structure_by_name(work_df)
+    work_df = _pubchem_structure_fallback(work_df)
     return work_df
 
 
@@ -263,6 +265,184 @@ def _build_positional_isomer_group_key(inchi="", smiles=""):
     return ""
 
 
+_ADDUCT_OFFSETS = [1.00728, 22.98922, 38.96316, 18.03437, -1.00728, 44.99765, 34.96885, 0.0]
+_MASS_TOLERANCE_DA = 0.5
+_CATALOG_ID_RE = re.compile(r"^[A-Z]{1,5}[0-9]{5,}$")
+
+
+def _mass_is_consistent(exact_mass, spec_mz) -> bool:
+    """Return True if exact_mass is plausibly consistent with spec_mz under any common adduct."""
+    try:
+        em = float(exact_mass)
+        mz = float(spec_mz)
+    except (TypeError, ValueError):
+        return True
+    if em <= 0 or mz <= 0:
+        return True
+    for offset in _ADDUCT_OFFSETS:
+        if abs(em + offset - mz) < _MASS_TOLERANCE_DA:
+            return True
+    if abs((em + 2 * 1.00728) / 2 - mz) < _MASS_TOLERANCE_DA:
+        return True
+    if abs((em + 3 * 1.00728) / 3 - mz) < _MASS_TOLERANCE_DA:
+        return True
+    return False
+
+
+def _harmonize_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Phase 1: InChIKey-first within-table structure propagation.
+
+    Groups rows sharing the same InChIKey-Planar and propagates structure fields
+    (Smiles, InChIKey, InChIKey-Planar, INCHI) from the richest row to any row
+    missing them.  This is unambiguous by construction: same InChIKey = same
+    compound, regardless of name variation.
+
+    Also sets _canonical_name: the shortest cleaned Compound_Name in each
+    InChIKey-Planar group, for display use downstream.
+    """
+    if "InChIKey-Planar" not in df.columns:
+        return df
+
+    present_fields = [f for f in _STRUCTURE_FIELDS if f in df.columns]
+    if not present_fields:
+        return df
+
+    work_df = df.copy()
+    _null = {"", "nan", "none", "null", "n/a", "na"}
+
+    valid_key_mask = (
+        ~work_df["InChIKey-Planar"].astype(str).str.strip().str.lower().isin(_null)
+    )
+    if not valid_key_mask.any():
+        return work_df
+
+    richness = sum(
+        (~work_df[f].astype(str).str.strip().str.lower().isin(_null)).astype(int)
+        for f in present_fields
+    )
+
+    filled = 0
+    for _key, group in work_df[valid_key_mask].groupby("InChIKey-Planar"):
+        best_idx = richness.loc[group.index].idxmax()
+        source = {f: work_df.at[best_idx, f] for f in present_fields}
+        for idx in group.index:
+            if idx == best_idx:
+                continue
+            for field, value in source.items():
+                if _is_valid_field(value) and not _is_valid_field(work_df.at[idx, field]):
+                    work_df.at[idx, field] = value
+                    filled += 1
+
+    if filled:
+        logger.debug("_harmonize_metadata: propagated %d structure field(s) via InChIKey grouping", filled)
+
+    if "Compound_Name" in work_df.columns:
+        cleaned = work_df["Compound_Name"].apply(_clean_compound_name)
+        canonical_map: dict = {}
+        for key_val, group in work_df[valid_key_mask].groupby("InChIKey-Planar"):
+            group_cleaned = cleaned.loc[group.index]
+            non_empty = group_cleaned[group_cleaned.str.strip().str.len() > 0]
+            canonical_map[str(key_val)] = (
+                non_empty.loc[non_empty.str.len().idxmin()]
+                if not non_empty.empty
+                else group_cleaned.iloc[0]
+            )
+        work_df["_canonical_name"] = (
+            work_df["InChIKey-Planar"].astype(str).map(canonical_map).fillna(cleaned)
+        )
+    else:
+        work_df["_canonical_name"] = ""
+
+    return work_df
+
+
+@lru_cache(maxsize=512)
+def _fetch_structure_from_pubchem(name: str):
+    """
+    Fetch (isomeric_smiles, inchikey) from PubChem by compound name.
+    Returns (None, None) on any failure.  lru_cache avoids redundant HTTP calls
+    within a session.
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+
+    try:
+        quoted = urllib.parse.quote(name)
+        url = (
+            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quoted}"
+            "/property/IsomericSMILES,InChIKey/JSON"
+        )
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+        props = data.get("PropertyTable", {}).get("Properties", [])
+        if not props:
+            return None, None
+        p = props[0]
+        return p.get("IsomericSMILES"), p.get("InChIKey")
+    except Exception:
+        return None, None
+
+
+def _pubchem_structure_fallback(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Last-resort structure assignment for rows that still lack all structure fields
+    after the main harmonization pipeline.
+
+    Queries PubChem by cleaned Compound_Name.  Guards:
+    - Name must be ≥ 4 characters after cleaning.
+    - Name must not match the bare catalog-ID pattern (e.g. AKOS018371418, ZINC12345).
+    Assigned structures are flagged in _structure_source = 'pubchem_name_lookup'
+    so callers can treat them with appropriate caution.
+    """
+    if "Compound_Name" not in df.columns:
+        return df
+
+    present_fields = [f for f in _STRUCTURE_FIELDS if f in df.columns]
+    if not present_fields:
+        return df
+
+    work_df = df.copy()
+    _null = {"", "nan", "none", "null", "n/a", "na"}
+
+    if "_structure_source" not in work_df.columns:
+        work_df["_structure_source"] = ""
+
+    missing_all = pd.Series(True, index=work_df.index)
+    for f in present_fields:
+        missing_all &= work_df[f].astype(str).str.strip().str.lower().isin(_null)
+
+    if not missing_all.any():
+        return work_df
+
+    filled = 0
+    for idx in work_df.index[missing_all]:
+        name = _clean_compound_name(str(work_df.at[idx, "Compound_Name"])).strip()
+        if len(name) < 4 or _CATALOG_ID_RE.match(name):
+            continue
+
+        smiles, inchikey = _fetch_structure_from_pubchem(name)
+        if not smiles:
+            continue
+
+        if "Smiles" in work_df.columns:
+            work_df.at[idx, "Smiles"] = smiles
+        if inchikey:
+            if "InChIKey" in work_df.columns:
+                work_df.at[idx, "InChIKey"] = inchikey
+            planar = inchikey.split("-")[0] if "-" in inchikey else inchikey
+            if "InChIKey-Planar" in work_df.columns:
+                work_df.at[idx, "InChIKey-Planar"] = planar
+        work_df.at[idx, "_structure_source"] = "pubchem_name_lookup"
+        filled += 1
+
+    if filled:
+        logger.debug("_pubchem_structure_fallback: filled %d row(s) via PubChem name lookup", filled)
+
+    return work_df
+
+
 def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
     """
     Fill missing structural fields for rows whose Compound_Name exactly matches
@@ -282,6 +462,9 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
     present_fields = [f for f in _STRUCTURE_FIELDS if f in df.columns]
     if not present_fields:
         return df
+
+    exact_mass_col = _find_first_column(df, ["ExactMass", "exact_mass", "exactmass"])
+    spec_mz_col = _find_first_column(df, ["SpecMZ", "Precursor_MZ", "precursor_mz"])
 
     work_df = df.copy()
 
@@ -309,12 +492,12 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
         for f in present_fields
     )
 
-    # Build a per-name source record using case-insensitive matching.
-    # Grouping on a lowercased copy keeps the ambiguity guard intact: e.g. "X"
-    # with structure A and "x" with structure B land in the same group and are
-    # correctly rejected when their canonical keys differ.
+    # Build a per-name source record using cleaned, case-insensitive name matching.
+    # Using _clean_compound_name as the grouping key collapses name variants such as
+    # "Spectral Match to Leu-Phe from NIST14" and "Leu-Phe" into the same group,
+    # while the unambiguity check below still rejects truly ambiguous synonyms.
     structured_df["_tmp_name_lower"] = (
-        structured_df["Compound_Name"].astype(str).str.strip().str.lower()
+        structured_df["Compound_Name"].apply(_clean_compound_name).str.lower()
     )
     name_to_source: dict = {}
     for name_lower, group in structured_df.groupby("_tmp_name_lower"):
@@ -328,7 +511,10 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
             continue
         # Pick the row with the most non-empty structure fields.
         best_idx = _field_counts.loc[group.index].idxmax()
-        name_to_source[name_lower] = {f: group.at[best_idx, f] for f in present_fields}
+        source_record = {f: group.at[best_idx, f] for f in present_fields}
+        if exact_mass_col and exact_mass_col in group.columns:
+            source_record["_exact_mass"] = group.at[best_idx, exact_mass_col]
+        name_to_source[name_lower] = source_record
 
     if not name_to_source:
         return work_df
@@ -343,12 +529,31 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
         return work_df
 
     filled = 0
+    skipped_mass = 0
     for idx in work_df.index[needs_any_field]:
-        name = str(work_df.at[idx, "Compound_Name"]).strip().lower()
+        name = _clean_compound_name(str(work_df.at[idx, "Compound_Name"])).lower()
         source = name_to_source.get(name)
         if source is None:
             continue
+        # Mass guardrail: the donor structure's ExactMass must be plausibly consistent
+        # with the target row's observed SpecMZ.  This blocks cross-scan misassignment
+        # when two different compounds share the same name.
+        if exact_mass_col and spec_mz_col and "_exact_mass" in source:
+            target_mz = work_df.at[idx, spec_mz_col]
+            if not _mass_is_consistent(source["_exact_mass"], target_mz):
+                skipped_mass += 1
+                logger.debug(
+                    "_propagate_structure_by_name: mass mismatch for '%s' "
+                    "(ExactMass=%.4f vs SpecMZ=%.4f), skipping row %s",
+                    name,
+                    source["_exact_mass"],
+                    target_mz,
+                    idx,
+                )
+                continue
         for field, value in source.items():
+            if field == "_exact_mass":
+                continue
             # Never overwrite a field that already carries valid data.
             if _is_valid_field(value) and not _is_valid_field(work_df.at[idx, field]):
                 work_df.at[idx, field] = value
@@ -356,6 +561,8 @@ def _propagate_structure_by_name(df: pd.DataFrame) -> pd.DataFrame:
 
     if filled:
         logger.debug("_propagate_structure_by_name: filled structure for %d row(s)", filled)
+    if skipped_mass:
+        logger.debug("_propagate_structure_by_name: skipped %d row(s) due to mass mismatch", skipped_mass)
 
     return work_df
 
