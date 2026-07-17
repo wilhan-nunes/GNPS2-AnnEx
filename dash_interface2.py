@@ -11,14 +11,16 @@ import dash_bootstrap_components as dbc
 from app import app
 from components import (
     _build_detail_panel,
+    _build_masst_section,
     _build_tanimoto_heatmap_figure,
+    _compute_monoisotopic_mass,
     _format_workflow_label,
     _net_spinner,
     _render_mol_png_data_uri,
     _search_pubchem_candidates,
 )
-from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
-from bin.constants import SUPPORTED_WORKFLOWS, PPM_SCALE, MZ_PRECISION_FLOOR
+from bin.normalizer import _infer_resolved_workflow, _truncate_text
+from bin.constants import SUPPORTED_WORKFLOWS, PPM_SIGMA, PPM_FLOOR
 import io
 
 import pandas as pd
@@ -27,6 +29,7 @@ from bin.loader import (
     _load_library_matches,
     _load_task_information,
     _compute_scores_cached,
+    load_retention_times,
 )
 from bin.scorer import DEFAULT_SCORE_WEIGHTS, _normalize_score_weights
 
@@ -60,6 +63,7 @@ _SCORE_WEIGHT_INPUT_DEFS = [
     },
     {"key": "max_cosine", "id": "score-weight-max-cosine", "label": "Max cosine"},
     {"key": "shared_peaks", "id": "score-weight-shared-peaks", "label": "Shared peaks"},
+    {"key": "library_diversity", "id": "score-weight-lib-diversity", "label": "Lib diversity"},
 ]
 _SCORE_WEIGHT_QUERY_PARAMS = {
     "structure_agreement": "w_structure",
@@ -67,6 +71,7 @@ _SCORE_WEIGHT_QUERY_PARAMS = {
     "cosine_consistency": "w_spectral",
     "max_cosine": "w_cosine",
     "shared_peaks": "w_shared",
+    "library_diversity": "w_lib_div",
 }
 
 # Column definitions for the summary AG Grid table.
@@ -80,6 +85,14 @@ _SUMMARY_COLUMN_DEFS = [
         "type": "numericColumn",
         "filter": "agNumberColumnFilter",
         "valueGetter": {"function": "Number(params.data.scan)"},
+    },
+    {
+        "headerName": "RT (min)",
+        "field": "retention_time",
+        "maxWidth": 100,
+        "type": "numericColumn",
+        "filter": "agNumberColumnFilter",
+        "headerTooltip": "Retention time in minutes from the FBMN feature table. Only available for FBMN workflows.",
     },
     {"headerName": "Prec. m/z", "field": "precursor_mz", "maxWidth": 110},
     {
@@ -343,7 +356,7 @@ _SUMMARY_COLUMN_DEFS = [
         "headerName": "MZ Precision Factor",
         "field": "mz_precision",
         "maxWidth": 145,
-        "headerTooltip": "Multiplicative factor applied to the base score based on MZErrorPPM. exp(-|ppm| / 10), floored at 0.5. 1.0 = no penalty.",
+        "headerTooltip": "Multiplicative factor applied to the base score. Formula: f + (1−f)·exp(−max(0,|ppm|−t)²/(2·S²)); t=5 ppm, S=10, f=0.5 by default. 1.0 = no penalty.",
         "cellStyle": {"textAlign": "center"},
     },
 ]
@@ -499,6 +512,7 @@ def _parse_score_weights_from_inputs(
     spectral_value,
     max_cosine_value,
     shared_peaks_value=None,
+    library_diversity_value=None,
 ):
     input_values = {
         "structure_agreement": structure_value,
@@ -506,6 +520,7 @@ def _parse_score_weights_from_inputs(
         "cosine_consistency": spectral_value,
         "max_cosine": max_cosine_value,
         "shared_peaks": shared_peaks_value,
+        "library_diversity": library_diversity_value,
     }
     parsed_weights = {}
     for key, default_value in DEFAULT_SCORE_WEIGHTS.items():
@@ -554,56 +569,56 @@ def _serialize_score_weights_for_query(score_weights=None):
 
 
 def _parse_ppm_from_query(query_dict):
-    ppm_scale_raw = _get_url_param(query_dict, "ppm_scale", "").strip()
+    ppm_sigma_raw = _get_url_param(query_dict, "ppm_sigma", "").strip()
     ppm_floor_raw = _get_url_param(query_dict, "ppm_floor", "").strip()
     try:
-        ppm_scale = float(ppm_scale_raw) if ppm_scale_raw else PPM_SCALE
-        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
-            ppm_scale = PPM_SCALE
+        ppm_sigma = float(ppm_sigma_raw) if ppm_sigma_raw else PPM_SIGMA
+        if not (math.isfinite(ppm_sigma) and ppm_sigma > 0):
+            ppm_sigma = PPM_SIGMA
     except (ValueError, TypeError):
-        ppm_scale = PPM_SCALE
+        ppm_sigma = PPM_SIGMA
     try:
-        ppm_floor = float(ppm_floor_raw) if ppm_floor_raw else MZ_PRECISION_FLOOR
+        ppm_floor = float(ppm_floor_raw) if ppm_floor_raw else PPM_FLOOR
         if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
-            ppm_floor = MZ_PRECISION_FLOOR
+            ppm_floor = PPM_FLOOR
     except (ValueError, TypeError):
-        ppm_floor = MZ_PRECISION_FLOOR
-    return ppm_scale, ppm_floor
+        ppm_floor = PPM_FLOOR
+    return ppm_sigma, ppm_floor
 
 
-def _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value):
+def _parse_ppm_from_inputs(ppm_sigma_value, ppm_floor_value):
     try:
-        ppm_scale = float(ppm_scale_value) if ppm_scale_value is not None else PPM_SCALE
-        if not (math.isfinite(ppm_scale) and ppm_scale > 0):
-            ppm_scale = PPM_SCALE
+        ppm_sigma = float(ppm_sigma_value) if ppm_sigma_value is not None else PPM_SIGMA
+        if not (math.isfinite(ppm_sigma) and ppm_sigma > 0):
+            ppm_sigma = PPM_SIGMA
     except (ValueError, TypeError):
-        ppm_scale = PPM_SCALE
+        ppm_sigma = PPM_SIGMA
     try:
         ppm_floor = (
             float(ppm_floor_value)
             if ppm_floor_value is not None
-            else MZ_PRECISION_FLOOR
+            else PPM_FLOOR
         )
         if not (math.isfinite(ppm_floor) and 0.0 <= ppm_floor <= 1.0):
-            ppm_floor = MZ_PRECISION_FLOOR
+            ppm_floor = PPM_FLOOR
     except (ValueError, TypeError):
-        ppm_floor = MZ_PRECISION_FLOOR
-    return ppm_scale, ppm_floor
+        ppm_floor = PPM_FLOOR
+    return ppm_sigma, ppm_floor
 
 
-def _ppm_params_are_default(ppm_scale, ppm_floor):
+def _ppm_params_are_default(ppm_sigma, ppm_floor):
     return (
-        abs(float(ppm_scale) - PPM_SCALE) < 1e-6
-        and abs(float(ppm_floor) - MZ_PRECISION_FLOOR) < 1e-6
+        abs(float(ppm_sigma) - PPM_SIGMA) < 1e-6
+        and abs(float(ppm_floor) - PPM_FLOOR) < 1e-6
     )
 
 
-def _serialize_ppm_for_query(ppm_scale, ppm_floor):
+def _serialize_ppm_for_query(ppm_sigma, ppm_floor):
     suffix = ""
-    if not _ppm_params_are_default(ppm_scale, ppm_floor):
-        if abs(float(ppm_scale) - PPM_SCALE) >= 1e-6:
-            suffix += f"&ppm_scale={float(ppm_scale):.6g}"
-        if abs(float(ppm_floor) - MZ_PRECISION_FLOOR) >= 1e-6:
+    if not _ppm_params_are_default(ppm_sigma, ppm_floor):
+        if abs(float(ppm_sigma) - PPM_SIGMA) >= 1e-6:
+            suffix += f"&ppm_sigma={float(ppm_sigma):.6g}"
+        if abs(float(ppm_floor) - PPM_FLOOR) >= 1e-6:
             suffix += f"&ppm_floor={float(ppm_floor):.6g}"
     return suffix
 
@@ -616,6 +631,230 @@ def _format_score_weight_summary(score_weights=None):
         for key in DEFAULT_SCORE_WEIGHTS
     ]
     return "Score weights: " + " · ".join(parts)
+
+
+def _build_scan_detail_href(
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    scan,
+    query_entropy=None,
+):
+    """Build a detail-view URL while preserving the active scoring settings."""
+    query_entropy_suffix = (
+        f"&qe={urllib.parse.quote(str(query_entropy))}"
+        if pd.notna(query_entropy)
+        else ""
+    )
+    return (
+        "/dashinterface2/?task="
+        f"{urllib.parse.quote(str(task_id))}"
+        f"&workflow={urllib.parse.quote(str(workflow_choice))}"
+        f"{score_weight_query_suffix}{ppm_query_suffix}"
+        f"&scan={urllib.parse.quote(str(scan))}{query_entropy_suffix}&detail=1"
+    )
+
+
+def _build_annotation_list(
+    rows,
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    empty_message,
+):
+    """Render a compact set of annotation links for the result overview."""
+    if rows.empty:
+        return html.P(empty_message, className="text-muted mb-0")
+
+    items = []
+    for _, row in rows.iterrows():
+        score = row.get("confidence_score")
+        score_text = f"{float(score):.0f}" if pd.notna(score) else "—"
+        href = _build_scan_detail_href(
+            task_id,
+            workflow_choice,
+            score_weight_query_suffix,
+            ppm_query_suffix,
+            row.get("scan"),
+            row.get("query_entropy"),
+        )
+        items.append(
+            dbc.ListGroupItem(
+                [
+                    html.Div(
+                        [
+                            html.A(
+                                str(row.get("top_compound") or "Unnamed compound"),
+                                href=href,
+                                className="fw-semibold text-decoration-none",
+                            ),
+                            html.Span(
+                                f"Scan {row.get('scan')}",
+                                className="text-muted small ms-2",
+                            ),
+                        ],
+                        className="d-flex align-items-baseline flex-wrap gap-1",
+                    ),
+                    html.Span(
+                        f"Score {score_text}",
+                        className="small text-muted text-nowrap ms-3",
+                    ),
+                ],
+                className="d-flex justify-content-between align-items-center px-0",
+            )
+        )
+    return dbc.ListGroup(items, flush=True)
+
+
+def _build_results_overview(
+    summary_df,
+    badge_counts,
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    task_metadata_details=None,
+):
+    """Create the concise, default landing view for a scored annotation task."""
+    total_scans = len(summary_df)
+    consistent_count = badge_counts["Consistent evidence"]
+    review_count = total_scans - consistent_count
+    consistent_percent = round((consistent_count / total_scans) * 100) if total_scans else 0
+
+    strongest_rows = (
+        summary_df.loc[summary_df["confidence_label"] == "Consistent evidence"]
+        .sort_values("confidence_score", ascending=False)
+        .head(5)
+    )
+    review_rows = (
+        summary_df.loc[summary_df["confidence_label"] != "Consistent evidence"]
+        .sort_values("confidence_score", ascending=True)
+        .head(5)
+    )
+
+    metric_cards = [
+        ("Scans assessed", f"{total_scans:,}", "Library annotations scored"),
+        (
+            "Consistent evidence",
+            f"{consistent_count:,}",
+            f"{consistent_percent}% of assessed scans",
+        ),
+        ("Needs review", f"{review_count:,}", "Inconclusive or inconsistent evidence"),
+    ]
+
+    return html.Div(
+        [
+            dbc.Card(
+                dbc.CardBody(
+                    [
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.H4("Evidence overview", className="mb-1"),
+                                        html.P(
+                                            [
+                                                f"{consistent_count:,} of {total_scans:,} scans have consistent evidence. ",
+                                                "Use the two lists below to act on the strongest calls and review the uncertain ones.",
+                                            ],
+                                            className="text-muted mb-0",
+                                        ),
+                                    ]
+                                ),
+                                html.A(
+                                    "Open GNPS2 task",
+                                    href=f"https://gnps2.org/status?task={task_id}",
+                                    target="_blank",
+                                    className="btn btn-outline-secondary btn-sm text-nowrap",
+                                ),
+                            ],
+                            className="d-flex justify-content-between align-items-start gap-3 flex-wrap",
+                        ),
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    dbc.Card(
+                                        dbc.CardBody(
+                                            [
+                                                html.Div(label, className="small text-uppercase text-muted fw-semibold"),
+                                                html.Div(value, className="fs-2 fw-semibold mt-1"),
+                                                html.Div(description, className="small text-muted mt-1"),
+                                            ],
+                                            className="py-3",
+                                        ),
+                                        className="h-100 border",
+                                    ),
+                                    md=4,
+                                )
+                                for label, value, description in metric_cards
+                            ],
+                            className="g-3 mt-1",
+                        ),
+                        html.Div(task_metadata_details, className="mt-3")
+                        if task_metadata_details
+                        else None,
+                    ]
+                ),
+                className="border-0 shadow-sm mb-3",
+                style={"borderRadius": "18px", "background": "rgba(255,255,255,0.94)"},
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H5("Strongest annotations", className="mb-1"),
+                                    html.P(
+                                        "Highest-scoring scans with consistent evidence.",
+                                        className="small text-muted mb-3",
+                                    ),
+                                    _build_annotation_list(
+                                        strongest_rows,
+                                        task_id,
+                                        workflow_choice,
+                                        score_weight_query_suffix,
+                                        ppm_query_suffix,
+                                        "No scans reached consistent evidence in this task.",
+                                    ),
+                                ]
+                            ),
+                            className="h-100 border-0 shadow-sm",
+                            style={"borderRadius": "14px"},
+                        ),
+                        lg=6,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H5("Review first", className="mb-1"),
+                                    html.P(
+                                        "Lowest-scoring scans that need a closer look.",
+                                        className="small text-muted mb-3",
+                                    ),
+                                    _build_annotation_list(
+                                        review_rows,
+                                        task_id,
+                                        workflow_choice,
+                                        score_weight_query_suffix,
+                                        ppm_query_suffix,
+                                        "All assessed scans have consistent evidence.",
+                                    ),
+                                ]
+                            ),
+                            className="h-100 border-0 shadow-sm",
+                            style={"borderRadius": "14px"},
+                        ),
+                        lg=6,
+                    ),
+                ],
+                className="g-3",
+            ),
+        ]
+    )
 
 
 def _build_score_weight_controls():
@@ -654,7 +893,7 @@ def _build_score_weight_controls():
             dbc.Col(
                 [
                     dbc.Label(
-                        "PPM penalty scale",
+                        "PPM sigma (S)",
                         html_for="ppm-scale",
                         className="small fw-semibold text-uppercase text-muted mb-1",
                     ),
@@ -664,7 +903,7 @@ def _build_score_weight_controls():
                         min=1,
                         max=200,
                         step=0.5,
-                        value=PPM_SCALE,
+                        value=PPM_SIGMA,
                         style={"borderColor": "rgba(0,0,0,0.12)"},
                         size="sm",
                     ),
@@ -684,7 +923,7 @@ def _build_score_weight_controls():
                         min=0,
                         max=1,
                         step=0.05,
-                        value=MZ_PRECISION_FLOOR,
+                        value=PPM_FLOOR,
                         style={"borderColor": "rgba(0,0,0,0.12)"},
                         size="sm",
                     ),
@@ -695,35 +934,42 @@ def _build_score_weight_controls():
         className="g-3 mt-2",
     )
 
-    return html.Div(
+    return html.Details(
         [
+            html.Summary(
+                [
+                    html.Span(
+                        "Advanced scoring parameters", className="fw-semibold"
+                    ),
+                    dbc.Badge(
+                        "Dev only",
+                        color="warning",
+                        text_color="dark",
+                        className="ms-2",
+                    ),
+                ],
+                className="d-flex align-items-center flex-wrap",
+                style={"cursor": "pointer"},
+            ),
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.Span("Score weight tuning", className="fw-semibold"),
-                            dbc.Badge(
-                                "Dev only",
-                                color="warning",
-                                text_color="dark",
-                                className="ms-2",
-                            ),
-                        ],
-                        className="d-flex align-items-center flex-wrap",
+                    html.Small(
+                        "Relative weights are normalized automatically when scores are computed.",
+                        className="text-muted d-block",
+                    ),
+                    dbc.Row(control_columns, className="g-3 mt-1"),
+                    html.Hr(
+                        className="my-2",
+                        style={"borderColor": "rgba(0,0,0,0.08)"},
                     ),
                     html.Small(
-                        "Relative weights used for annotation scoring. Values are normalized automatically when scores are computed.",
-                        className="text-muted d-block mt-1",
+                        "PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.",
+                        className="text-muted",
                     ),
-                ]
+                    ppm_row,
+                ],
+                className="pt-3",
             ),
-            dbc.Row(control_columns, className="g-3 mt-1"),
-            html.Hr(className="my-2", style={"borderColor": "rgba(0,0,0,0.08)"}),
-            html.Small(
-                "PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.",
-                className="text-muted",
-            ),
-            ppm_row,
         ],
         className="mt-3 p-3 border rounded-4",
         style={
@@ -753,13 +999,13 @@ def _parse_dashboard_query(search):
         precomputed_query_entropy = None
 
     score_weights = _parse_score_weights_from_query(query_dict)
-    ppm_scale, ppm_floor = _parse_ppm_from_query(query_dict)
+    ppm_sigma, ppm_floor = _parse_ppm_from_query(query_dict)
 
     return {
         "task_id": _get_url_param(query_dict, "task", "").strip(),
         "workflow_choice": workflow_choice,
         "score_weights": score_weights,
-        "ppm_scale": ppm_scale,
+        "ppm_sigma": ppm_sigma,
         "ppm_floor": ppm_floor,
         "detail_mode": _get_url_param(query_dict, "detail", "0") == "1",
         "scan": _get_url_param(query_dict, "scan", "").strip(),
@@ -1009,6 +1255,7 @@ BODY = dbc.Container(
         dcc.Store(id="matches-store", storage_type="memory"),
         dcc.Store(id="run-params-store", storage_type="memory"),
         dcc.Store(id="scan-data-store", storage_type="memory"),
+        dcc.Store(id="masst-params-store", storage_type="memory"),
         dcc.Store(id="pubchem-overrides-store", storage_type="memory"),
         dcc.Download(id="download-summary"),
         INFO_MODAL,
@@ -1133,6 +1380,7 @@ dash_app.layout = html.Div([NAVBAR, BODY])
         Output("score-weight-spectral", "value"),
         Output("score-weight-max-cosine", "value"),
         Output("score-weight-shared-peaks", "value"),
+        Output("score-weight-lib-diversity", "value"),
         Output("ppm-scale", "value"),
         Output("ppm-floor", "value"),
     ],
@@ -1151,7 +1399,8 @@ def determine_task_from_url(search):
         score_weight_inputs["cosine_consistency"],
         score_weight_inputs["max_cosine"],
         score_weight_inputs["shared_peaks"],
-        query_state["ppm_scale"],
+        score_weight_inputs["library_diversity"],
+        query_state["ppm_sigma"],
         query_state["ppm_floor"],
     )
 
@@ -1172,6 +1421,7 @@ def toggle_controls_for_detail_view(search):
         Output("detail-compounds-panel", "children"),
         Output("detail-masst-panel", "children"),
         Output("scan-data-store", "data"),
+        Output("masst-params-store", "data"),
     ],
     [Input("url", "search")],
 )
@@ -1179,14 +1429,14 @@ def render_detail_panel(search):
     query_state = _parse_dashboard_query(search)
 
     if not query_state["detail_mode"]:
-        return html.Div(), html.Div(), html.Div(), None
+        return html.Div(), html.Div(), html.Div(), None, None
 
     task_id = query_state["task_id"]
     scan = query_state["scan"]
     workflow_choice = query_state["workflow_choice"]
     precomputed_query_entropy = query_state["precomputed_query_entropy"]
     score_weights = query_state["score_weights"]
-    ppm_scale = query_state["ppm_scale"]
+    ppm_sigma = query_state["ppm_sigma"]
     ppm_floor = query_state["ppm_floor"]
 
     if not task_id or not scan:
@@ -1197,45 +1447,49 @@ def render_detail_panel(search):
             html.Div(),
             html.Div(),
             None,
+            None,
         )
 
     try:
-        panel_ui, compounds_data = _build_detail_panel(
+        panel_ui, compounds_data, per_compound_masst = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
             score_weights=score_weights,
             precomputed_query_entropy=precomputed_query_entropy,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
+            skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else html.Div()
         compounds_panel = html.Div(children[1:3]) if len(children) > 1 else html.Div()
-        masst_panel = children[3] if len(children) > 3 else html.Div()
+        masst_spinner = children[3] if len(children) > 3 else html.Div()
+        masst_params = [{"name": n, "block": b} for n, b in per_compound_masst]
         return (
             score_panel,
             compounds_panel,
-            masst_panel,
+            masst_spinner,
             {
                 "compounds": compounds_data,
                 "task_id": task_id,
                 "scan": scan,
                 "workflow_choice": workflow_choice,
                 "score_weights": score_weights,
-                "ppm_scale": ppm_scale,
+                "ppm_sigma": ppm_sigma,
                 "ppm_floor": ppm_floor,
                 "precomputed_query_entropy": precomputed_query_entropy,
             },
+            masst_params,
         )
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None
+        return dbc.Alert(str(exc), color="danger"), html.Div(), html.Div(), None, None
 
 
 @dash_app.callback(
     [
         Output("detail-score-panel", "children", allow_duplicate=True),
-        Output("detail-masst-panel", "children", allow_duplicate=True),
+        Output("masst-params-store", "data", allow_duplicate=True),
     ],
     [
         Input("scan-data-store", "data"),
@@ -1245,9 +1499,9 @@ def render_detail_panel(search):
     prevent_initial_call=True,
 )
 def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
-    """Update score panel and MASST card on PubChem selection without remounting the structure table."""
+    """Update score panel and queue a MASST reload on PubChem selection."""
     if not scan_data:
-        return html.Div(), html.Div()
+        return html.Div(), no_update
 
     task_id = _truncate_text(str(scan_data.get("task_id", "")), max_length=200)
     scan = _truncate_text(str(scan_data.get("scan", "")), max_length=200)
@@ -1255,8 +1509,8 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
         str(scan_data.get("workflow_choice", "auto")), max_length=40
     )
     score_weights = _normalize_score_weights(scan_data.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        scan_data.get("ppm_scale"), scan_data.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        scan_data.get("ppm_sigma"), scan_data.get("ppm_floor")
     )
     use_pubchem_for_score = (
         isinstance(pubchem_value, list) and "enabled" in pubchem_value
@@ -1264,10 +1518,10 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
     precomputed_query_entropy = scan_data.get("precomputed_query_entropy")
 
     if not task_id or not scan:
-        return html.Div(), html.Div()
+        return html.Div(), no_update
 
     try:
-        panel_ui, _ = _build_detail_panel(
+        panel_ui, _, per_compound_masst = _build_detail_panel(
             task_id,
             scan,
             workflow_choice,
@@ -1275,15 +1529,32 @@ def refresh_detail_score_panel(scan_data, pubchem_overrides, pubchem_value):
             pubchem_overrides=pubchem_overrides,
             use_pubchem_for_score=use_pubchem_for_score,
             precomputed_query_entropy=precomputed_query_entropy,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
+            skip_masst=True,
         )
         children = panel_ui.children if getattr(panel_ui, "children", None) else []
         score_panel = children[0] if len(children) > 0 else panel_ui
-        masst_panel = children[3] if len(children) > 3 else html.Div()
-        return score_panel, masst_panel
+        masst_params = [{"name": n, "block": b} for n, b in per_compound_masst]
+        return score_panel, masst_params
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), html.Div()
+        return dbc.Alert(str(exc), color="danger"), no_update
+
+
+@dash_app.callback(
+    Output("detail-masst-panel", "children", allow_duplicate=True),
+    Input("masst-params-store", "data"),
+    prevent_initial_call=True,
+)
+def load_masst_panel(masst_params):
+    """Fetch MASST biological context asynchronously after the rest of the detail panel loads."""
+    if not masst_params:
+        return html.Div()
+    per_compound_masst = [(item["name"], item["block"]) for item in masst_params]
+    try:
+        return _build_masst_section(per_compound_masst)
+    except Exception as exc:
+        return dbc.Alert(f"MASST context unavailable: {exc}", color="warning")
 
 
 @dash_app.callback(
@@ -1311,6 +1582,7 @@ def reset_pubchem_overrides_on_page_change(search):
         State("score-weight-spectral", "value"),
         State("score-weight-max-cosine", "value"),
         State("score-weight-shared-peaks", "value"),
+        State("score-weight-lib-diversity", "value"),
         State("ppm-scale", "value"),
         State("ppm-floor", "value"),
     ],
@@ -1325,7 +1597,8 @@ def load_library_matches_callback(
     spectral_weight_value,
     max_cosine_weight_value,
     shared_peaks_weight_value,
-    ppm_scale_value,
+    library_diversity_weight_value,
+    ppm_sigma_value,
     ppm_floor_value,
 ):
     """Stage 1 — fetch library matches and report what was found."""
@@ -1340,7 +1613,7 @@ def load_library_matches_callback(
         task_id = query_state["task_id"]
         workflow_choice = query_state["workflow_choice"]
         score_weights = query_state["score_weights"]
-        ppm_scale = query_state["ppm_scale"]
+        ppm_sigma = query_state["ppm_sigma"]
         ppm_floor = query_state["ppm_floor"]
     else:
         task_id = (task_id or "").strip()
@@ -1351,8 +1624,9 @@ def load_library_matches_callback(
             spectral_weight_value,
             max_cosine_weight_value,
             shared_peaks_weight_value,
+            library_diversity_weight_value,
         )
-        ppm_scale, ppm_floor = _parse_ppm_from_inputs(ppm_scale_value, ppm_floor_value)
+        ppm_sigma, ppm_floor = _parse_ppm_from_inputs(ppm_sigma_value, ppm_floor_value)
 
     if workflow_choice not in SUPPORTED_WORKFLOWS:
         workflow_choice = "auto"
@@ -1369,53 +1643,6 @@ def load_library_matches_callback(
     except Exception as exc:
         return no_update, no_update, dbc.Alert(str(exc), color="danger")
 
-    scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
-    n_matches = len(matches_df)
-    n_scans = matches_df[scan_col].nunique() if scan_col else "?"
-
-    status = dbc.Card(
-        dbc.CardBody(
-            [
-                html.Div(
-                    [
-                        dbc.Badge("Loading", color="primary", className="me-2"),
-                        html.Span(
-                            "Preparing scan-level confidence summary",
-                            className="fw-semibold",
-                        ),
-                    ],
-                    className="d-flex align-items-center mb-2",
-                ),
-                html.Div(
-                    [
-                        dbc.Badge(
-                            f"{n_matches:,} matches",
-                            color="light",
-                            text_color="dark",
-                            className="me-2",
-                        ),
-                        dbc.Badge(
-                            f"{n_scans:,} scans", color="light", text_color="dark"
-                        ),
-                    ],
-                    className="mb-2",
-                ),
-                html.Div(
-                    html.Span(
-                        "Scoring model: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks. Results will appear below.",
-                        className="text-muted",
-                    ),
-                ),
-            ]
-        ),
-        className="border-0 shadow-sm mb-0",
-        style={
-            "borderRadius": "14px",
-            "background": "linear-gradient(135deg, #f7fbff 0%, #eef4ff 100%)",
-            "border": "1px solid rgba(90, 130, 190, 0.2)",
-        },
-    )
-
     task_info = {}
     try:
         task_info = _load_task_information(task_id)
@@ -1427,12 +1654,15 @@ def load_library_matches_callback(
         "workflow_choice": workflow_choice,
         "resolved_workflow": resolved_workflow,
         "score_weights": score_weights,
-        "ppm_scale": ppm_scale,
+        "ppm_sigma": ppm_sigma,
         "ppm_floor": ppm_floor,
         "task_info": task_info,
     }
 
-    return matches_df.to_json(orient="split"), params, status
+    # The surrounding dcc.Loading component provides feedback while this callback
+    # is active. Clear the status region after a successful fetch so a completed
+    # "Loading" message does not remain above the results.
+    return matches_df.to_json(orient="split"), params, html.Div()
 
 
 @dash_app.callback(
@@ -1449,13 +1679,13 @@ def compute_and_render_scores(matches_json, params):
     workflow_choice = params["workflow_choice"]
     resolved_workflow = params["resolved_workflow"]
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        params.get("ppm_scale"), params.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_sigma"), params.get("ppm_floor")
     )
     task_info = params.get("task_info") or {}
     custom_score_weights_active = not _score_weights_are_default(score_weights)
     score_weight_query_suffix = _serialize_score_weights_for_query(score_weights)
-    ppm_query_suffix = _serialize_ppm_for_query(ppm_scale, ppm_floor)
+    ppm_query_suffix = _serialize_ppm_for_query(ppm_sigma, ppm_floor)
 
     try:
         score_weights_tuple = tuple(sorted(score_weights.items()))
@@ -1464,8 +1694,8 @@ def compute_and_render_scores(matches_json, params):
             workflow_choice,
             resolved_workflow,
             score_weights_tuple,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
         )
         if summary_json is None:
             return dbc.Alert(
@@ -1474,6 +1704,16 @@ def compute_and_render_scores(matches_json, params):
         summary_df = pd.read_json(io.StringIO(summary_json), orient="split")
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger")
+
+    try:
+        rt_df = load_retention_times(task_id)
+        if rt_df is not None and not rt_df.empty:
+            summary_df = summary_df.merge(rt_df, on="scan", how="left")
+            summary_df["retention_time"] = summary_df["retention_time"].round(2)
+        else:
+            summary_df["retention_time"] = None
+    except Exception:
+        summary_df["retention_time"] = None
 
     if len(summary_df) == 0:
         return dbc.Alert(
@@ -1508,17 +1748,17 @@ def compute_and_render_scores(matches_json, params):
     table_df["compound_link"] = table_df.apply(
         lambda row: (
             ("🔁 " if row.get("structure_key") in _duplicate_structure_keys else "")
-            + f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
-            f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-            f"{score_weight_query_suffix}"
-            f"{ppm_query_suffix}"
-            f"&scan={urllib.parse.quote(str(row['scan']))}"
-            + (
-                f"&qe={row['query_entropy']}"
-                if row.get("query_entropy") is not None
-                else ""
+            + f"[{row['top_compound']}]"
+            + "("
+            + _build_scan_detail_href(
+                task_id,
+                workflow_choice,
+                score_weight_query_suffix,
+                ppm_query_suffix,
+                row["scan"],
+                row.get("query_entropy"),
             )
-            + "&detail=1)"
+            + ")"
         ),
         axis=1,
     )
@@ -1561,119 +1801,102 @@ def compute_and_render_scores(matches_json, params):
         style={"height": "760px", "width": "100%"},
     )
 
-    return html.Div(
+    overview = _build_results_overview(
+        summary_df,
+        badge_counts,
+        task_id,
+        workflow_choice,
+        score_weight_query_suffix,
+        ppm_query_suffix,
+        task_metadata_details,
+    )
+
+    table_card = dbc.Card(
         [
-            dbc.Card(
+            dbc.CardHeader(html.H5("All scan annotations", className="mb-0")),
+            dbc.CardBody(
                 [
-                    dbc.CardHeader(html.H5("Annotation Evidence Summary")),
-                    dbc.CardBody(
+                    html.Div(
                         [
-                            html.P(
-                                [
-                                    "Task: ",
-                                    html.A(
-                                        task_id,
-                                        href=f"https://gnps2.org/status?task={task_id}",
-                                        target="_blank",
-                                    ),
-                                    " · Scoring: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks",
-                                ]
-                            ),
                             html.Small(
                                 _format_score_weight_summary(score_weights),
-                                className="text-muted d-block mb-2",
+                                className="text-muted",
                             ),
-                            task_metadata_details,
                             (
                                 dbc.Badge(
                                     "Custom score weights active",
                                     color="warning",
                                     text_color="dark",
-                                    className="me-2",
+                                    className="ms-2",
                                 )
                                 if custom_score_weights_active
                                 else None
                             ),
-                            dbc.Badge(
-                                f"Consistent evidence: {badge_counts['Consistent evidence']}",
-                                color="success",
-                                className="me-2",
-                            ),
-                            dbc.Badge(
-                                f"Inconclusive: {badge_counts['Inconclusive']}",
-                                color="warning",
-                                className="me-2",
-                            ),
-                            dbc.Badge(
-                                f"Inconsistent evidence: {badge_counts['Inconsistent evidence']}",
-                                color="danger",
-                            ),
-                        ]
+                        ],
+                        className="mb-3",
                     ),
-                ],
-                className="mb-3",
-            ),
-            dbc.Card(
-                [
-                    dbc.CardHeader(html.H5("Scan-Level Annotations")),
-                    dbc.CardBody(
+                    dbc.Row(
                         [
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        html.Small(
-                                            "Click a proposed compound to open the detail view with structure images and mirror-plot links.",
-                                            className="text-muted",
-                                        ),
-                                    ),
-                                    dbc.Col(
-                                        html.Div(
-                                            [
-                                                dbc.Button(
-                                                    "⬇ Export CSV",
-                                                    id="download-csv-btn",
-                                                    color="outline-secondary",
-                                                    size="sm",
-                                                    className="me-2",
-                                                ),
-                                                dbc.DropdownMenu(
-                                                    label="Columns",
-                                                    children=dbc.Checklist(
-                                                        id="column-visibility-checklist",
-                                                        options=[
-                                                            {
-                                                                "label": col[
-                                                                    "headerName"
-                                                                ]
-                                                                .split("(")[0]
-                                                                .strip(),
-                                                                "value": col["field"],
-                                                            }
-                                                            for col in _SUMMARY_COLUMN_DEFS
-                                                        ],
-                                                        value=list(initial_visible),
-                                                        className="px-3 py-2",
-                                                        style={"minWidth": "220px"},
-                                                    ),
-                                                    size="sm",
-                                                    align_end=True,
-                                                ),
-                                            ],
-                                            className="d-flex align-items-center",
-                                        ),
-                                        width="auto",
-                                    ),
-                                ],
-                                align="center",
-                                className="mb-2",
+                            dbc.Col(
+                                html.Small(
+                                    "Click a proposed compound to inspect its evidence in detail.",
+                                    className="text-muted",
+                                ),
                             ),
-                            html.Hr(className="mt-0"),
-                            results_table,
-                        ]
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        dbc.Button(
+                                            "⬇ Export CSV",
+                                            id="download-csv-btn",
+                                            color="outline-secondary",
+                                            size="sm",
+                                            className="me-2",
+                                        ),
+                                        dbc.DropdownMenu(
+                                            label="Columns",
+                                            children=dbc.Checklist(
+                                                id="column-visibility-checklist",
+                                                options=[
+                                                    {
+                                                        "label": col["headerName"]
+                                                        .split("(")[0]
+                                                        .strip(),
+                                                        "value": col["field"],
+                                                    }
+                                                    for col in _SUMMARY_COLUMN_DEFS
+                                                ],
+                                                value=list(initial_visible),
+                                                className="px-3 py-2",
+                                                style={"minWidth": "220px"},
+                                            ),
+                                            size="sm",
+                                            align_end=True,
+                                        ),
+                                    ],
+                                    className="d-flex align-items-center",
+                                ),
+                                width="auto",
+                            ),
+                        ],
+                        align="center",
+                        className="mb-2",
                     ),
+                    html.Hr(className="mt-0"),
+                    results_table,
                 ]
             ),
-        ]
+        ],
+        className="border-0 shadow-sm",
+        style={"borderRadius": "18px"},
+    )
+
+    return dbc.Tabs(
+        [
+            dbc.Tab(overview, label="Overview", tab_id="overview", className="pt-3"),
+            dbc.Tab(table_card, label="Scan table", tab_id="scan-table", className="pt-3"),
+        ],
+        active_tab="overview",
     )
 
 
@@ -1704,8 +1927,8 @@ def download_summary_csv(n_clicks, matches_json, params):
     task_id = params.get("task_id", "unknown")
     resolved_workflow = params.get("resolved_workflow", "auto")
     score_weights = _normalize_score_weights(params.get("score_weights"))
-    ppm_scale, ppm_floor = _parse_ppm_from_inputs(
-        params.get("ppm_scale"), params.get("ppm_floor")
+    ppm_sigma, ppm_floor = _parse_ppm_from_inputs(
+        params.get("ppm_sigma"), params.get("ppm_floor")
     )
 
     try:
@@ -1716,8 +1939,8 @@ def download_summary_csv(n_clicks, matches_json, params):
             workflow_choice,
             resolved_workflow,
             score_weights_tuple,
-            ppm_scale=ppm_scale,
-            mz_precision_floor=ppm_floor,
+            ppm_sigma=ppm_sigma,
+            ppm_floor=ppm_floor,
         )
         if summary_json is None:
             return no_update
@@ -1910,29 +2133,25 @@ def refresh_pubchem_structure_previews(overrides, preview_ids, compound_infos):
         smiles_for_render = selected_smiles or base_smiles
 
         image_url = _render_mol_png_data_uri(smiles=smiles_for_render, inchi=inchi)
+        mono_mass = _compute_monoisotopic_mass(smiles_for_render, inchi)
         if image_url:
-            updated_children.append(
-                html.Div(
-                    [
-                        html.Img(
-                            src=image_url,
-                            style={
-                                "width": "180px",
-                                "height": "180px",
-                                "objectFit": "contain",
-                            },
-                        ),
-                        html.Small(
-                            (
-                                "Structure from selected PubChem match"
-                                if selected_smiles
-                                else "Structure from library/InChI"
-                            ),
-                            className="text-muted d-block",
-                        ),
-                    ]
-                )
-            )
+            children = [
+                html.Img(
+                    src=image_url,
+                    style={"width": "180px", "height": "180px", "objectFit": "contain"},
+                ),
+                html.Small(
+                    "Structure from selected PubChem match" if selected_smiles else "Structure from library/InChI",
+                    className="text-muted d-block",
+                ),
+            ]
+            if mono_mass is not None:
+                children.append(html.Small(
+                    f"Monoisotopic mass: {mono_mass:.4f} Da",
+                    className="text-muted d-block text-center mt-1",
+                    style={"fontSize": "11px"},
+                ))
+            updated_children.append(html.Div(children))
         else:
             updated_children.append(
                 html.Small(

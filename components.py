@@ -6,13 +6,14 @@ import math
 import urllib.parse
 import urllib.request
 from difflib import SequenceMatcher
+from functools import lru_cache
 from io import BytesIO
 
 import dash_bootstrap_components as dbc
 import pandas as pd
 from dash import dcc, html
 from rdkit import Chem
-from rdkit.Chem import Draw
+from rdkit.Chem import Descriptors, Draw
 
 from bin.loader import _load_library_matches
 from bin.normalizer import (
@@ -406,6 +407,9 @@ def _build_reliability_breakdown_panel(
     mz_precision_val = float(score_row.get("mz_precision", 1.0))
     raw_shared_peaks = float(score_row.get("shared_peaks", 0.0) or 0.0)
     shared_peaks_score_val = float(score_row.get("shared_peaks_score", 0.0) or 0.0)
+    shared_peaks_source = _to_text(score_row.get("shared_peaks_source", ""))
+    query_peak_count = score_row.get("query_peak_count")
+    library_diversity_score_val = float(score_row.get("library_diversity_score", 0.0) or 0.0)
     gauge_src = _build_reliability_gauge_data_uri(confidence_score, palette["color"])
 
     similarity_formula = (
@@ -479,8 +483,20 @@ def _build_reliability_breakdown_panel(
             "formula": f"normalised peak overlap × {_format_weight_percent(normalized_score_weights.get('shared_peaks', 0.0))}",
             "weight": normalized_score_weights.get("shared_peaks", 0.0),
             "value": shared_peaks_score_val,
-            "raw_primary": f"{raw_shared_peaks:.1f} mean shared peaks → {shared_peaks_score_val:.4f} (soft-normalised x/(x+5))",
+            "raw_primary": (
+                f"{raw_shared_peaks:.1f} / {query_peak_count} filtered query peaks → {shared_peaks_score_val:.4f} (coverage fraction)"
+                if shared_peaks_source == "coverage_fraction" and query_peak_count
+                else f"{raw_shared_peaks:.1f} mean shared peaks → {shared_peaks_score_val:.4f} (soft-normalised x/(x+5))"
+            ),
             "raw_secondary": "Counts fragment ions matched between query and library; penalises sparse spectral overlap",
+        },
+        {
+            "label": "Library diversity",
+            "formula": f"unique source databases / {5} × {_format_weight_percent(normalized_score_weights.get('library_diversity', 0.0))}",
+            "weight": normalized_score_weights.get("library_diversity", 0.0),
+            "value": library_diversity_score_val,
+            "raw_primary": f"{library_diversity_score_val:.4f} · unique library files contributing hits",
+            "raw_secondary": "Saturates at 5 distinct library files (LibraryName); rewards hits confirmed across independent libraries",
         },
     ]
 
@@ -682,6 +698,19 @@ def _render_mol_png_data_uri(smiles="", inchi=""):
     return f"data:image/png;base64,{encoded_image}"
 
 
+def _compute_monoisotopic_mass(smiles: str = "", inchi: str = ""):
+    smiles = _to_text(smiles)
+    inchi = _to_text(inchi)
+    mol = None
+    if smiles:
+        mol = Chem.MolFromSmiles(smiles)
+    if mol is None and inchi:
+        mol = Chem.MolFromInchi(inchi)
+    if mol is None:
+        return None
+    return round(Descriptors.ExactMolWt(mol), 4)
+
+
 def _build_mirror_plot_link(query_usi, library_usi):
     query_usi = _to_text(query_usi)
     library_usi = _normalize_library_usi(library_usi)
@@ -695,17 +724,10 @@ def _build_mirror_plot_link(query_usi, library_usi):
 MASST_API_URL = "https://masst-records.gnps2.org/masst_records.json?sql="
 
 
-def _fetch_masst_context(inchikey_first_blocks: list) -> pd.DataFrame:
-    """
-    Query the MASST records API for biological context of the given InChIKey first blocks.
-
-    Joins masst_table → library_table → redu_table to retrieve SampleType and
-    UBERONBodyPartName counts. Returns an empty DataFrame on failure.
-    """
-    blocks = [b for b in inchikey_first_blocks if b and len(b) >= 5]
-    if not blocks:
-        return pd.DataFrame(), ""
-
+@lru_cache(maxsize=256)
+def _fetch_masst_context_cached(blocks_tuple: tuple):
+    """Cached core of _fetch_masst_context. Accepts a sorted, deduped tuple of blocks."""
+    blocks = list(blocks_tuple)
     in_clause = ", ".join(f"'{b}'" for b in blocks)
     sql = f"""
 WITH filtered AS (
@@ -744,6 +766,19 @@ LIMIT 100
     except Exception:
         logger.debug("MASST context fetch failed for InChIKeys %s", blocks)
         return pd.DataFrame(), sql
+
+
+def _fetch_masst_context(inchikey_first_blocks: list):
+    """
+    Query the MASST records API for biological context of the given InChIKey first blocks.
+
+    Results are cached in-process (lru_cache) so repeated views of the same compound
+    don't pay the ~10 s HTTP round-trip each time.
+    """
+    blocks_tuple = tuple(sorted(set(b for b in inchikey_first_blocks if b and len(b) >= 5)))
+    if not blocks_tuple:
+        return pd.DataFrame(), ""
+    return _fetch_masst_context_cached(blocks_tuple)
 
 
 def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str = ""):
@@ -1156,6 +1191,34 @@ def _build_query_spectrum_card(query_usi: str, precomputed_entropy=None):
     )
 
 
+def _build_masst_section(per_compound_masst: list):
+    """Build the MASST/ReDU biological context card(s) from a list of (name, inchikey_block) pairs.
+
+    Separated from _build_detail_panel so it can be loaded asynchronously via a
+    dedicated Dash callback, allowing the rest of the detail panel to render immediately.
+    """
+    if len(per_compound_masst) == 1:
+        cname, fblock = per_compound_masst[0]
+        return _build_masst_context_card([fblock], compound_label=cname)
+    if len(per_compound_masst) > 1:
+        accordion_items = []
+        for cname, fblock in per_compound_masst:
+            inner = _build_masst_context_card([fblock], compound_label=cname)
+            accordion_items.append(
+                dbc.AccordionItem(inner, title=f"{cname} ({fblock})")
+            )
+        return dbc.Card(
+            [
+                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
+                dbc.CardBody(
+                    dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
+                ),
+            ],
+            className="mt-3",
+        )
+    return html.Div()
+
+
 def _build_detail_panel(
     task_id,
     scan,
@@ -1164,20 +1227,25 @@ def _build_detail_panel(
     pubchem_overrides=None,
     use_pubchem_for_score=False,
     precomputed_query_entropy=None,
-    ppm_scale=None,
-    mz_precision_floor=None,
+    ppm_sigma=None,
+    ppm_floor=None,
+    skip_masst=False,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
     matches_df = _load_library_matches(task_id, workflow_choice)
     resolved_workflow = _infer_resolved_workflow(matches_df, workflow_choice)
+
+    # Use scan_filter to score only the rows for this one scan; much faster (~2 s) than
+    # scoring the full dataset (~24 s) when _compute_scores_cached is not already warm.
+    # If the main table was loaded first, the MGF lru_cache is warm and this drops to ~0.1 s.
     summary_df = _compute_scan_level_confidence(
         matches_df,
         task_id=task_id,
         workflow_choice=resolved_workflow,
         scan_filter=scan,
         score_weights=normalized_score_weights,
-        ppm_scale=ppm_scale,
-        mz_precision_floor=mz_precision_floor,
+        ppm_sigma=ppm_sigma,
+        ppm_floor=ppm_floor,
     )
 
     scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
@@ -1268,12 +1336,18 @@ def _build_detail_panel(
 
             adduct = _to_text(row.get("_adduct"))
             mz_error_ppm = row.get("_mz_error_ppm")
+            cosine_score = row.get("_cosine")
+            library_name = _to_text(row.get("_library_name"))
+            compound_name = _to_text(row.get("_compound"))
             existing_match = match_lookup.get(normalized_library_usi)
             if existing_match is None:
                 existing_match = {
                     "library_usi": normalized_library_usi,
                     "adduct": adduct,
                     "mz_error_ppm": mz_error_ppm,
+                    "cosine_score": cosine_score,
+                    "library_name": library_name,
+                    "compound_name": compound_name,
                 }
                 match_lookup[normalized_library_usi] = existing_match
                 ordered_matches.append(existing_match)
@@ -1316,35 +1390,54 @@ def _build_detail_panel(
         inchi = inchi_candidates[0] if inchi_candidates else ""
         cosine = float(group_df["_cosine"].max()) if len(group_df) else 0.0
         image_url = _render_mol_png_data_uri(smiles=smiles, inchi=inchi)
+        mono_mass = _compute_monoisotopic_mass(smiles, inchi)
+        mass_label = html.Small(
+            f"Monoisotopic mass: {mono_mass:.4f} Da" if mono_mass is not None else "Mass unavailable",
+            className="text-muted d-block text-center mt-1",
+            style={"fontSize": "11px"},
+        )
         normalized_library_usis = [match["library_usi"] for match in library_matches]
 
         mirror_links = []
         for link_idx, library_match in enumerate(library_matches):
             adduct_label = library_match["adduct"] or "Adduct unavailable"
             mz_error_ppm = library_match.get("mz_error_ppm")
+            cosine_score = library_match.get("cosine_score")
+            match_lib_name = library_match.get("library_name") or ""
+            match_compound_name = library_match.get("compound_name") or ""
             try:
                 ppm_label = f"{float(mz_error_ppm):.2f} ppm" if mz_error_ppm is not None and not (mz_error_ppm != mz_error_ppm) else None
             except (TypeError, ValueError):
                 ppm_label = None
+            try:
+                cosine_label = f"cosine {float(cosine_score):.4f}" if cosine_score is not None and not (cosine_score != cosine_score) else None
+            except (TypeError, ValueError):
+                cosine_label = None
+            parenthesis_parts = [p for p in [ppm_label, cosine_label] if p]
+            parenthesis_text = f" ({', '.join(parenthesis_parts)})" if parenthesis_parts else None
             mirror_links.append(
                 html.Div(
                     [
-                        html.Span(f"{adduct_label}: ", className="text-muted"),
-                        html.A(
-                            f"Mirror plot {link_idx + 1}",
-                            href=_build_mirror_plot_link(query_usi, library_match["library_usi"]),
-                            target="_blank",
-                        ),
-                        html.Span(f" ({ppm_label})", className="text-muted small ms-1") if ppm_label else None,
+                        html.Div([
+                            html.Span(f"{adduct_label}: ", className="text-muted"),
+                            html.A(
+                                f"Mirror plot {link_idx + 1}",
+                                href=_build_mirror_plot_link(query_usi, library_match["library_usi"]),
+                                target="_blank",
+                            ),
+                            html.Span(parenthesis_text, className="text-muted small ms-1") if parenthesis_text else None,
+                        ]),
+                        html.Small(match_compound_name, className="d-block text-dark") if match_compound_name else None,
+                        html.Small(f"Library: {match_lib_name}", className="d-block text-muted") if match_lib_name else None,
                     ],
-                    className="mb-1",
+                    className="mb-2",
                 )
             )
 
         can_search_pubchem = not smiles
 
         if can_search_pubchem:
-            preview_children = (
+            img_or_placeholder = (
                 html.Img(
                     src=image_url,
                     style={"width": "180px", "height": "180px", "objectFit": "contain"},
@@ -1355,6 +1448,7 @@ def _build_detail_panel(
                     className="text-muted d-block",
                 )
             )
+            preview_children = [img_or_placeholder] + ([mass_label] if mono_mass is not None else [])
 
             structure_preview = html.Div(
                 id={"type": "pubchem-structure-preview", "index": card_idx},
@@ -1387,13 +1481,16 @@ def _build_detail_panel(
                 ]
             )
         else:
-            structure_preview = html.Div(
+            _struct_img = (
                 html.Img(
                     src=image_url,
                     style={"width": "180px", "height": "180px", "objectFit": "contain"},
                 )
                 if image_url
-                else html.Small("No structure image available.", className="text-muted d-block"),
+                else html.Small("No structure image available.", className="text-muted d-block")
+            )
+            structure_preview = html.Div(
+                [_struct_img] + ([mass_label] if mono_mass is not None else []),
                 id={"type": "pubchem-structure-preview", "index": card_idx},
                 className="mb-0",
             )
@@ -1484,7 +1581,7 @@ def _build_detail_panel(
                 [
                     html.Td(structure_preview, style={"width": "210px", "verticalAlign": "top"}),
                     html.Td(summary_cell, style={"verticalAlign": "top", "minWidth": "320px"}),
-                    html.Td(html.Div(action_cell_children), style={"width": "320px", "verticalAlign": "top"}),
+                    html.Td(html.Div(action_cell_children), style={"width": "33%", "verticalAlign": "top"}),
                 ]
             )
         )
@@ -1565,7 +1662,7 @@ def _build_detail_panel(
                                 [
                                     html.Th("Structure"),
                                     html.Th("Match Summary"),
-                                    html.Th("Library Evidence / PubChem"),
+                                    html.Th("Library Evidence / PubChem", style={"width": "33%"}),
                                 ]
                             )
                         ),
@@ -1582,8 +1679,9 @@ def _build_detail_panel(
         ]
     )
 
-    # Build per-structure MASST cards (deduplicated by InChIKey first block).
-    # If a PubChem SMILES override exists for a card, derive its InChIKey from that SMILES.
+    # Collect per-structure MASST params (deduplicated by InChIKey first block).
+    # The actual HTTP fetch is deferred to _build_masst_section, called later via
+    # a separate Dash callback so the rest of the panel renders immediately.
     seen_blocks: set = set()
     per_compound_masst = []
     for cidx, cname, cik in compound_masst_items:
@@ -1598,28 +1696,16 @@ def _build_detail_panel(
         seen_blocks.add(first_block)
         per_compound_masst.append((cname, first_block))
 
-    if len(per_compound_masst) == 1:
-        cname, fblock = per_compound_masst[0]
-        masst_card = _build_masst_context_card([fblock], compound_label=cname)
-    elif len(per_compound_masst) > 1:
-        accordion_items = []
-        for cname, fblock in per_compound_masst:
-            inner = _build_masst_context_card([fblock], compound_label=cname)
-            accordion_items.append(
-                dbc.AccordionItem(inner, title=f"{cname} ({fblock})")
-            )
-        masst_card = dbc.Card(
-            [
-                dbc.CardHeader(html.H5("Biological Context (MASST/ReDU) – Per Group")),
-                dbc.CardBody(
-                    dbc.Accordion(accordion_items, start_collapsed=True, always_open=True)
-                ),
-            ],
-            className="mt-3",
+    if skip_masst:
+        masst_card = dbc.Spinner(
+            html.Div(id="masst-loading-target"),
+            color="secondary",
+            size="sm",
+            spinner_class_name="me-2",
         )
     else:
-        masst_card = html.Div()
+        masst_card = _build_masst_section(per_compound_masst)
 
     spectrum_card = _build_query_spectrum_card(query_usi, precomputed_entropy=precomputed_query_entropy)
 
-    return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data
+    return html.Div([metric_card, spectrum_card, compounds_card, masst_card]), compounds_data, per_compound_masst

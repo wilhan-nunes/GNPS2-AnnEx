@@ -4,6 +4,7 @@ import pytest
 from bin.normalizer import (
     _build_query_usi,
     _canonical_structure_key,
+    _derive_smiles_from_inchi,
     _find_first_column,
     _infer_resolved_workflow,
     _is_valid_field,
@@ -283,6 +284,34 @@ class TestPropagateStructureByName:
         assert _is_valid_field(result.loc[1, "Smiles"])
         assert _is_valid_field(result.loc[1, "InChIKey"])
 
+    def test_case_insensitive_name_match(self):
+        """'NORLEUCINE' (with SMILES) should propagate to 'Norleucine' (without)."""
+        df = pd.DataFrame({
+            "Compound_Name": ["NORLEUCINE", "Norleucine"],
+            "Smiles": [CAFFEINE_SMILES, None],
+        })
+        result = _propagate_structure_by_name(df)
+        assert result.loc[1, "Smiles"] == CAFFEINE_SMILES
+
+    def test_case_insensitive_ambiguous_not_propagated(self):
+        """Same name different case but different structures → do not propagate."""
+        df = pd.DataFrame({
+            "Compound_Name": ["X", "x", "X"],
+            "Smiles": [CAFFEINE_SMILES, ASPIRIN_SMILES, None],
+        })
+        result = _propagate_structure_by_name(df)
+        assert not _is_valid_field(result.loc[2, "Smiles"])
+
+    def test_partial_structure_row_receives_missing_smiles(self):
+        """Row with InChIKey but no SMILES should receive SMILES from sibling with same name."""
+        df = pd.DataFrame({
+            "Compound_Name": ["Caffeine", "Caffeine"],
+            "Smiles": [CAFFEINE_SMILES, None],
+            "InChIKey": [None, "RYYVLZVUVIJVGH-UHFFFAOYSA-N"],
+        })
+        result = _propagate_structure_by_name(df)
+        assert result.loc[1, "Smiles"] == CAFFEINE_SMILES
+
     def test_normalize_pipeline_triggers_propagation(self):
         """_normalize_library_matches_dataframe should call propagation."""
         df = pd.DataFrame({
@@ -293,3 +322,42 @@ class TestPropagateStructureByName:
         })
         result = _normalize_library_matches_dataframe(df)
         assert _is_valid_field(result.loc[1, "Smiles"])
+
+
+# ── _derive_smiles_from_inchi ──────────────────────────────────────────────────
+
+_CAFFEINE_INCHI = "InChI=1S/C8H10N4O2/c1-10-4-9-6-5(10)7(13)12(3)8(14)11(6)2/h4H,1-3H3"
+
+
+class TestDeriveSmilesToInchi:
+    def test_fills_smiles_from_valid_inchi(self):
+        df = pd.DataFrame({"Smiles": [None], "INCHI": [_CAFFEINE_INCHI]})
+        result = _derive_smiles_from_inchi(df)
+        assert _is_valid_field(result.loc[0, "Smiles"])
+
+    def test_invalid_inchi_leaves_smiles_empty(self):
+        df = pd.DataFrame({"Smiles": [None], "INCHI": ["not-an-inchi"]})
+        result = _derive_smiles_from_inchi(df)
+        assert not _is_valid_field(result.loc[0, "Smiles"])
+
+    def test_existing_smiles_not_overwritten(self):
+        df = pd.DataFrame({"Smiles": [CAFFEINE_SMILES], "INCHI": [_CAFFEINE_INCHI]})
+        result = _derive_smiles_from_inchi(df)
+        assert result.loc[0, "Smiles"] == CAFFEINE_SMILES
+
+    def test_missing_columns_returns_unchanged(self):
+        df = pd.DataFrame({"Smiles": [None]})
+        result = _derive_smiles_from_inchi(df)
+        assert result.equals(df)
+
+    def test_pipeline_derives_smiles_from_inchi(self):
+        """Full pipeline: InChI-only row should end up with a SMILES after normalization."""
+        df = pd.DataFrame({
+            "#Scan#": ["1"],
+            "MQScore": [0.9],
+            "Compound_Name": ["Caffeine"],
+            "Smiles": [None],
+            "INCHI": [_CAFFEINE_INCHI],
+        })
+        result = _normalize_library_matches_dataframe(df)
+        assert _is_valid_field(result.loc[0, "Smiles"])

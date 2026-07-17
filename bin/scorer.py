@@ -5,7 +5,11 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .constants import ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, PPM_SCALE, MZ_PRECISION_FLOOR
+from .constants import (
+    ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY,
+    PPM_SIGMA, PPM_FLOOR, PPM_TOLERANCE, PPM_GATE_MODE,
+    SUPPORT_ALPHA, SUPPORT_BETA,
+)
 from .normalizer import (
     _annotate_support_groups,
     _build_query_usi,
@@ -17,19 +21,20 @@ from .normalizer import (
 )
 from .tanimoto import _canonical_smiles, compute_cross_group_tanimoto, scan_tanimoto
 from .wcrs import Subgroup, wcrs
-from .mgf_loader import get_query_entropy_from_mgf, _entropy_label
+from .mgf_loader import get_query_entropy_from_mgf, get_filtered_query_peak_count_from_mgf, _entropy_label
+from .spectral_entropy_v2 import DEFAULT_NOISE_THRESHOLD, DEFAULT_MAX_PEAK_NUM
 
 logger = logging.getLogger(__name__)
 
 # Weights are pre-normalised (sum = 1.0).
-# Nominal intent: structure 50 : tanimoto 15 : spectral 25 : cosine 10 : shared_peaks 10
-# Divided by 110 to keep the sum exactly 1.
+# library_diversity rewards consensus across independent source databases.
 DEFAULT_SCORE_WEIGHTS = {
-    "structure_agreement": 50 / 110,
-    "tanimoto": 15 / 110,
-    "cosine_consistency": 25 / 110,
-    "max_cosine": 10 / 110,
-    "shared_peaks": 10 / 110,
+    "structure_agreement": 40 / 100,
+    "tanimoto": 15 / 100,
+    "cosine_consistency": 20 / 100,
+    "max_cosine": 15 / 100,
+    "shared_peaks": 5 / 100,
+    "library_diversity": 5 / 100,
 }
 
 
@@ -72,6 +77,7 @@ def _compute_confidence_score(
     cosine_consistency,
     max_cosine,
     shared_peaks_score=0.0,
+    library_diversity_score=0.0,
     score_weights=None,
 ):
     normalized_score_weights = _normalize_score_weights(score_weights)
@@ -81,6 +87,7 @@ def _compute_confidence_score(
         + normalized_score_weights["cosine_consistency"] * float(cosine_consistency)
         + normalized_score_weights["max_cosine"] * float(max_cosine)
         + normalized_score_weights.get("shared_peaks", 0.0) * float(shared_peaks_score)
+        + normalized_score_weights.get("library_diversity", 0.0) * float(library_diversity_score)
     )
     return min(100.0, max(0.0, confidence_score))
 
@@ -125,8 +132,9 @@ def _compute_scan_level_confidence(
     workflow_choice="auto",
     scan_filter=None,
     score_weights=None,
-    ppm_scale=None,
-    mz_precision_floor=None,
+    ppm_sigma=None,
+    ppm_floor=None,
+    ppm_gate_mode=None,
 ):
     scan_col = _find_first_column(df, ["#Scan#", "scan", "Scan"])
     cosine_col = _find_first_column(df, ["MQScore", "Cosine", "cosine"])
@@ -180,17 +188,21 @@ def _compute_scan_level_confidence(
     normalized_score_weights = _normalize_score_weights(score_weights)
 
     try:
-        _ppm_scale = float(ppm_scale) if ppm_scale is not None else PPM_SCALE
-        if not (math.isfinite(_ppm_scale) and _ppm_scale > 0):
-            _ppm_scale = PPM_SCALE
+        _ppm_sigma = float(ppm_sigma) if ppm_sigma is not None else PPM_SIGMA
+        if not (math.isfinite(_ppm_sigma) and _ppm_sigma > 0):
+            _ppm_sigma = PPM_SIGMA
     except (TypeError, ValueError):
-        _ppm_scale = PPM_SCALE
+        _ppm_sigma = PPM_SIGMA
     try:
-        _mz_precision_floor = float(mz_precision_floor) if mz_precision_floor is not None else MZ_PRECISION_FLOOR
-        if not (math.isfinite(_mz_precision_floor) and 0.0 <= _mz_precision_floor <= 1.0):
-            _mz_precision_floor = MZ_PRECISION_FLOOR
+        _ppm_floor = float(ppm_floor) if ppm_floor is not None else PPM_FLOOR
+        if not (math.isfinite(_ppm_floor) and 0.0 <= _ppm_floor <= 1.0):
+            _ppm_floor = PPM_FLOOR
     except (TypeError, ValueError):
-        _mz_precision_floor = MZ_PRECISION_FLOOR
+        _ppm_floor = PPM_FLOOR
+    try:
+        _ppm_gate_mode = bool(ppm_gate_mode) if ppm_gate_mode is not None else PPM_GATE_MODE
+    except (TypeError, ValueError):
+        _ppm_gate_mode = PPM_GATE_MODE
 
     summary_rows = []
     for scan, scan_df in work_df.groupby(scan_col):
@@ -222,7 +234,7 @@ def _compute_scan_level_confidence(
                 mean_shared_peaks=("_shared_peaks", "mean"),
                 median_abs_ppm=("_abs_ppm", "median"),
             )
-            .sort_values(["count", "mean_cosine", "max_cosine"], ascending=False)
+            .sort_values(["count", "max_cosine", "mean_cosine"], ascending=False)
         )
 
         # Extract one representative SMILES per support group (highest-cosine hit).
@@ -252,7 +264,8 @@ def _compute_scan_level_confidence(
             tanimoto_score: float = winner_wcrs.avg_similarity
             tanimoto_source: str = "tanimoto_wcrs"
         elif len(wcrs_subgroups) == 1 and any(v is not None for v in group_rep_smiles.values()):
-            tanimoto_score = 1.0
+            # Single structure group: Bayesian-shrunk quality signal (avoids trivial 1.0 for low-n scans).
+            tanimoto_score = (total_matches + SUPPORT_ALPHA) / (total_matches + SUPPORT_ALPHA + SUPPORT_BETA)
             tanimoto_source = "single_structure"
         else:
             # No usable SMILES — fall back to count-based support fraction.
@@ -276,8 +289,7 @@ def _compute_scan_level_confidence(
         structure_hits = scan_df[scan_df["_support_group_key"] == support_group_key]
         representative_row = structure_hits.sort_values("_cosine", ascending=False).iloc[0]
         structure_key = representative_row.get("_structure_key", "UNKNOWN_STRUCTURE")
-        _mode = structure_hits["_compound"].mode()
-        top_compound = _mode.iloc[0] if len(_mode) > 0 else ""
+        top_compound = str(representative_row["_compound"])
 
         # Identify the hit with the globally highest cosine across ALL groups.
         _global_best_idx = scan_df["_cosine"].idxmax()
@@ -285,20 +297,45 @@ def _compute_scan_level_confidence(
         _global_top_compound = scan_df.at[_global_best_idx, "_compound"]
         top_cosine_overridden = bool(_global_top_group != support_group_key)
 
-        support_fraction = best["count"] / total_matches if total_matches else 0.0
+        # Bayesian shrinkage: (supporting + α) / (total + α + β) shrinks toward 0.5 for low-n scans.
+        support_fraction = (best["count"] + SUPPORT_ALPHA) / (total_matches + SUPPORT_ALPHA + SUPPORT_BETA) if total_matches else 0.0
         mean_cosine = float(best["mean_cosine"])
         max_cosine = float(best["max_cosine"])
 
-        # SharedPeaks: soft normalisation x/(x+K) → [0, 1]
+        # SharedPeaks: coverage fraction (shared / query_peak_count) when available,
+        # falling back to soft normalisation x/(x+K) when query peak count is unknown.
         raw_shared_peaks = float(best["mean_shared_peaks"]) if not math.isnan(float(best["mean_shared_peaks"])) else 0.0
-        shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
+        query_peak_count = get_filtered_query_peak_count_from_mgf(
+            task_id, scan,
+            noise_threshold=DEFAULT_NOISE_THRESHOLD,
+            max_peak_num=DEFAULT_MAX_PEAK_NUM,
+        )
+        if query_peak_count is not None and query_peak_count > 0:
+            shared_peaks_score = min(1.0, raw_shared_peaks / query_peak_count)
+            shared_peaks_source = "coverage_fraction"
+        else:
+            shared_peaks_score = raw_shared_peaks / (raw_shared_peaks + K_SHARED_PEAKS)
+            shared_peaks_source = "soft_normalization"
 
-        # MZErrorPPM: multiplicative precision factor, floored to avoid over-penalising low-res instruments
+        # Library diversity: fraction of unique library files in the winner group.
+        # Reads the "LibraryName" column directly; soft-capped at K_LIBRARY_DIVERSITY.
+        library_diversity_score = 0.0
+        if "LibraryName" in work_df.columns:
+            unique_libs: set = set()
+            for lib in structure_hits["LibraryName"].astype(str):
+                if lib.lower() not in {"nan", "", "none"}:
+                    unique_libs.add(lib)
+            library_diversity_score = min(len(unique_libs), K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY
+
+        # MZ precision: step gate (default) or Gaussian decay beyond tolerance band.
         raw_abs_ppm = float(best["median_abs_ppm"])
         if math.isnan(raw_abs_ppm) or mz_error_col is None:
             mz_precision = 1.0  # no data → no penalty
+        elif _ppm_gate_mode:
+            mz_precision = 1.0 if raw_abs_ppm <= PPM_TOLERANCE else _ppm_floor
         else:
-            mz_precision = max(_mz_precision_floor, math.exp(-raw_abs_ppm / _ppm_scale))
+            _excess = max(0.0, raw_abs_ppm - PPM_TOLERANCE)
+            mz_precision = _ppm_floor + (1.0 - _ppm_floor) * math.exp(-(_excess ** 2) / (2.0 * _ppm_sigma ** 2))
 
         # Always build query_usi (needed for entropy similarity and USI fallback).
         representative_spectrum_file = _to_text(representative_row.get("_spectrum_file"))
@@ -313,14 +350,17 @@ def _compute_scan_level_confidence(
         if q_entropy_result is not None:
             query_entropy, query_entropy_label = q_entropy_result
 
-        # Cosine consistency: 1 − clamp(std/mean, 0, 1). Single-hit groups get 1.0.
+        # Cosine consistency: 1 − clamp(std/mean, 0, 1).
+        # Single-hit groups have no variance to measure — set to 0.0 (undefined).
+        # max_cosine carries the spectral signal for those scans.
         _std_cosine = float(best["std_cosine"])
         if math.isnan(_std_cosine) or int(best["count"]) < 2:
-            cosine_consistency = 1.0
+            cosine_consistency = 0.0
+            cosine_consistency_source = "single_hit_undefined"
         else:
             cv = _std_cosine / mean_cosine if mean_cosine > 0 else 1.0
             cosine_consistency = max(0.0, 1.0 - min(1.0, cv))
-        cosine_consistency_source = "cosine_consistency"
+            cosine_consistency_source = "cosine_consistency"
 
         confidence_score = _compute_confidence_score(
             support_fraction,
@@ -328,6 +368,7 @@ def _compute_scan_level_confidence(
             cosine_consistency,
             max_cosine,
             shared_peaks_score=shared_peaks_score,
+            library_diversity_score=library_diversity_score,
             score_weights=normalized_score_weights,
         )
         confidence_score = min(100.0, max(0.0, confidence_score * mz_precision))
@@ -358,6 +399,9 @@ def _compute_scan_level_confidence(
                 "tanimoto_source": tanimoto_source,
                 "shared_peaks": round(raw_shared_peaks, 2),
                 "shared_peaks_score": round(shared_peaks_score, 4),
+                "shared_peaks_source": shared_peaks_source,
+                "query_peak_count": query_peak_count,
+                "library_diversity_score": round(library_diversity_score, 4),
                 "median_abs_ppm_error": round(raw_abs_ppm, 3) if not math.isnan(raw_abs_ppm) else None,
                 "mz_precision": round(mz_precision, 4),
                 "confidence_score": round(confidence_score, 1),

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import io
 import logging
 from functools import lru_cache
 
@@ -134,6 +135,37 @@ def _load_library_matches(task_id, workflow_choice):
 
 
 @cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
+def _load_retention_times_cached(task_id):
+    try:
+        quant_df = workflow_fbmn.get_quantification_dataframe(task_id, gnps2=True)
+        if quant_df is None or quant_df.empty:
+            return None
+        if "row ID" not in quant_df.columns or "row retention time" not in quant_df.columns:
+            logger.warning("Quant table missing expected RT columns for task %s", task_id)
+            return None
+        rt_df = (
+            quant_df[["row ID", "row retention time"]]
+            .drop_duplicates("row ID")
+            .rename(columns={"row ID": "scan", "row retention time": "retention_time"})
+        )
+        rt_df["scan"] = rt_df["scan"].astype(str)
+        return rt_df.to_json(orient="split")
+    except Exception as exc:
+        logger.warning("Could not load retention times for task %s: %s", task_id, exc)
+        return None
+
+
+def load_retention_times(task_id):
+    task_id = (task_id or "").strip()
+    if not task_id:
+        return None
+    raw = _load_retention_times_cached(task_id)
+    if raw is None:
+        return None
+    return pd.read_json(io.StringIO(raw), orient="split")
+
+
+@cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
 def _load_task_information_cached(task_id):
     task_id = (task_id or "").strip()
     if not task_id:
@@ -152,7 +184,7 @@ def _load_task_information_cached(task_id):
 
 
 @cache.memoize(timeout=LIBRARY_RESULTS_CACHE_TIMEOUT_SEC)
-def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_weights_tuple, ppm_scale=None, mz_precision_floor=None):
+def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_weights_tuple, ppm_sigma=None, ppm_floor=None):
     """Memoized wrapper around _compute_scan_level_confidence.
 
     Cache key: task_id + workflow_choice + resolved_workflow + score weights + ppm params.
@@ -170,8 +202,8 @@ def _compute_scores_cached(task_id, workflow_choice, resolved_workflow, score_we
         task_id=task_id,
         workflow_choice=resolved_workflow,
         score_weights=score_weights,
-        ppm_scale=ppm_scale,
-        mz_precision_floor=mz_precision_floor,
+        ppm_sigma=ppm_sigma,
+        ppm_floor=ppm_floor,
     )
     if summary_df is None or len(summary_df) == 0:
         return None
