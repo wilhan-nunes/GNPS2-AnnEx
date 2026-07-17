@@ -19,7 +19,7 @@ from components import (
     _render_mol_png_data_uri,
     _search_pubchem_candidates,
 )
-from bin.normalizer import _find_first_column, _infer_resolved_workflow, _truncate_text
+from bin.normalizer import _infer_resolved_workflow, _truncate_text
 from bin.constants import SUPPORTED_WORKFLOWS, PPM_SIGMA, PPM_FLOOR
 import io
 
@@ -633,6 +633,230 @@ def _format_score_weight_summary(score_weights=None):
     return "Score weights: " + " · ".join(parts)
 
 
+def _build_scan_detail_href(
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    scan,
+    query_entropy=None,
+):
+    """Build a detail-view URL while preserving the active scoring settings."""
+    query_entropy_suffix = (
+        f"&qe={urllib.parse.quote(str(query_entropy))}"
+        if pd.notna(query_entropy)
+        else ""
+    )
+    return (
+        "/dashinterface2/?task="
+        f"{urllib.parse.quote(str(task_id))}"
+        f"&workflow={urllib.parse.quote(str(workflow_choice))}"
+        f"{score_weight_query_suffix}{ppm_query_suffix}"
+        f"&scan={urllib.parse.quote(str(scan))}{query_entropy_suffix}&detail=1"
+    )
+
+
+def _build_annotation_list(
+    rows,
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    empty_message,
+):
+    """Render a compact set of annotation links for the result overview."""
+    if rows.empty:
+        return html.P(empty_message, className="text-muted mb-0")
+
+    items = []
+    for _, row in rows.iterrows():
+        score = row.get("confidence_score")
+        score_text = f"{float(score):.0f}" if pd.notna(score) else "—"
+        href = _build_scan_detail_href(
+            task_id,
+            workflow_choice,
+            score_weight_query_suffix,
+            ppm_query_suffix,
+            row.get("scan"),
+            row.get("query_entropy"),
+        )
+        items.append(
+            dbc.ListGroupItem(
+                [
+                    html.Div(
+                        [
+                            html.A(
+                                str(row.get("top_compound") or "Unnamed compound"),
+                                href=href,
+                                className="fw-semibold text-decoration-none",
+                            ),
+                            html.Span(
+                                f"Scan {row.get('scan')}",
+                                className="text-muted small ms-2",
+                            ),
+                        ],
+                        className="d-flex align-items-baseline flex-wrap gap-1",
+                    ),
+                    html.Span(
+                        f"Score {score_text}",
+                        className="small text-muted text-nowrap ms-3",
+                    ),
+                ],
+                className="d-flex justify-content-between align-items-center px-0",
+            )
+        )
+    return dbc.ListGroup(items, flush=True)
+
+
+def _build_results_overview(
+    summary_df,
+    badge_counts,
+    task_id,
+    workflow_choice,
+    score_weight_query_suffix,
+    ppm_query_suffix,
+    task_metadata_details=None,
+):
+    """Create the concise, default landing view for a scored annotation task."""
+    total_scans = len(summary_df)
+    consistent_count = badge_counts["Consistent evidence"]
+    review_count = total_scans - consistent_count
+    consistent_percent = round((consistent_count / total_scans) * 100) if total_scans else 0
+
+    strongest_rows = (
+        summary_df.loc[summary_df["confidence_label"] == "Consistent evidence"]
+        .sort_values("confidence_score", ascending=False)
+        .head(5)
+    )
+    review_rows = (
+        summary_df.loc[summary_df["confidence_label"] != "Consistent evidence"]
+        .sort_values("confidence_score", ascending=True)
+        .head(5)
+    )
+
+    metric_cards = [
+        ("Scans assessed", f"{total_scans:,}", "Library annotations scored"),
+        (
+            "Consistent evidence",
+            f"{consistent_count:,}",
+            f"{consistent_percent}% of assessed scans",
+        ),
+        ("Needs review", f"{review_count:,}", "Inconclusive or inconsistent evidence"),
+    ]
+
+    return html.Div(
+        [
+            dbc.Card(
+                dbc.CardBody(
+                    [
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.H4("Evidence overview", className="mb-1"),
+                                        html.P(
+                                            [
+                                                f"{consistent_count:,} of {total_scans:,} scans have consistent evidence. ",
+                                                "Use the two lists below to act on the strongest calls and review the uncertain ones.",
+                                            ],
+                                            className="text-muted mb-0",
+                                        ),
+                                    ]
+                                ),
+                                html.A(
+                                    "Open GNPS2 task",
+                                    href=f"https://gnps2.org/status?task={task_id}",
+                                    target="_blank",
+                                    className="btn btn-outline-secondary btn-sm text-nowrap",
+                                ),
+                            ],
+                            className="d-flex justify-content-between align-items-start gap-3 flex-wrap",
+                        ),
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    dbc.Card(
+                                        dbc.CardBody(
+                                            [
+                                                html.Div(label, className="small text-uppercase text-muted fw-semibold"),
+                                                html.Div(value, className="fs-2 fw-semibold mt-1"),
+                                                html.Div(description, className="small text-muted mt-1"),
+                                            ],
+                                            className="py-3",
+                                        ),
+                                        className="h-100 border",
+                                    ),
+                                    md=4,
+                                )
+                                for label, value, description in metric_cards
+                            ],
+                            className="g-3 mt-1",
+                        ),
+                        html.Div(task_metadata_details, className="mt-3")
+                        if task_metadata_details
+                        else None,
+                    ]
+                ),
+                className="border-0 shadow-sm mb-3",
+                style={"borderRadius": "18px", "background": "rgba(255,255,255,0.94)"},
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H5("Strongest annotations", className="mb-1"),
+                                    html.P(
+                                        "Highest-scoring scans with consistent evidence.",
+                                        className="small text-muted mb-3",
+                                    ),
+                                    _build_annotation_list(
+                                        strongest_rows,
+                                        task_id,
+                                        workflow_choice,
+                                        score_weight_query_suffix,
+                                        ppm_query_suffix,
+                                        "No scans reached consistent evidence in this task.",
+                                    ),
+                                ]
+                            ),
+                            className="h-100 border-0 shadow-sm",
+                            style={"borderRadius": "14px"},
+                        ),
+                        lg=6,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H5("Review first", className="mb-1"),
+                                    html.P(
+                                        "Lowest-scoring scans that need a closer look.",
+                                        className="small text-muted mb-3",
+                                    ),
+                                    _build_annotation_list(
+                                        review_rows,
+                                        task_id,
+                                        workflow_choice,
+                                        score_weight_query_suffix,
+                                        ppm_query_suffix,
+                                        "All assessed scans have consistent evidence.",
+                                    ),
+                                ]
+                            ),
+                            className="h-100 border-0 shadow-sm",
+                            style={"borderRadius": "14px"},
+                        ),
+                        lg=6,
+                    ),
+                ],
+                className="g-3",
+            ),
+        ]
+    )
+
+
 def _build_score_weight_controls():
     input_defaults = _score_weight_inputs_from_weights()
     control_columns = []
@@ -710,35 +934,42 @@ def _build_score_weight_controls():
         className="g-3 mt-2",
     )
 
-    return html.Div(
+    return html.Details(
         [
+            html.Summary(
+                [
+                    html.Span(
+                        "Advanced scoring parameters", className="fw-semibold"
+                    ),
+                    dbc.Badge(
+                        "Dev only",
+                        color="warning",
+                        text_color="dark",
+                        className="ms-2",
+                    ),
+                ],
+                className="d-flex align-items-center flex-wrap",
+                style={"cursor": "pointer"},
+            ),
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.Span("Score weight tuning", className="fw-semibold"),
-                            dbc.Badge(
-                                "Dev only",
-                                color="warning",
-                                text_color="dark",
-                                className="ms-2",
-                            ),
-                        ],
-                        className="d-flex align-items-center flex-wrap",
+                    html.Small(
+                        "Relative weights are normalized automatically when scores are computed.",
+                        className="text-muted d-block",
+                    ),
+                    dbc.Row(control_columns, className="g-3 mt-1"),
+                    html.Hr(
+                        className="my-2",
+                        style={"borderColor": "rgba(0,0,0,0.08)"},
                     ),
                     html.Small(
-                        "Relative weights used for annotation scoring. Values are normalized automatically when scores are computed.",
-                        className="text-muted d-block mt-1",
+                        "PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.",
+                        className="text-muted",
                     ),
-                ]
+                    ppm_row,
+                ],
+                className="pt-3",
             ),
-            dbc.Row(control_columns, className="g-3 mt-1"),
-            html.Hr(className="my-2", style={"borderColor": "rgba(0,0,0,0.08)"}),
-            html.Small(
-                "PPM error penalization — applied as a multiplicative factor: exp(−|ppm| / scale), floored at the floor value.",
-                className="text-muted",
-            ),
-            ppm_row,
         ],
         className="mt-3 p-3 border rounded-4",
         style={
@@ -1412,53 +1643,6 @@ def load_library_matches_callback(
     except Exception as exc:
         return no_update, no_update, dbc.Alert(str(exc), color="danger")
 
-    scan_col = _find_first_column(matches_df, ["#Scan#", "scan", "Scan"])
-    n_matches = len(matches_df)
-    n_scans = matches_df[scan_col].nunique() if scan_col else "?"
-
-    status = dbc.Card(
-        dbc.CardBody(
-            [
-                html.Div(
-                    [
-                        dbc.Badge("Loading", color="primary", className="me-2"),
-                        html.Span(
-                            "Preparing scan-level confidence summary",
-                            className="fw-semibold",
-                        ),
-                    ],
-                    className="d-flex align-items-center mb-2",
-                ),
-                html.Div(
-                    [
-                        dbc.Badge(
-                            f"{n_matches:,} matches",
-                            color="light",
-                            text_color="dark",
-                            className="me-2",
-                        ),
-                        dbc.Badge(
-                            f"{n_scans:,} scans", color="light", text_color="dark"
-                        ),
-                    ],
-                    className="mb-2",
-                ),
-                html.Div(
-                    html.Span(
-                        "Scoring model: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks. Results will appear below.",
-                        className="text-muted",
-                    ),
-                ),
-            ]
-        ),
-        className="border-0 shadow-sm mb-0",
-        style={
-            "borderRadius": "14px",
-            "background": "linear-gradient(135deg, #f7fbff 0%, #eef4ff 100%)",
-            "border": "1px solid rgba(90, 130, 190, 0.2)",
-        },
-    )
-
     task_info = {}
     try:
         task_info = _load_task_information(task_id)
@@ -1475,7 +1659,10 @@ def load_library_matches_callback(
         "task_info": task_info,
     }
 
-    return matches_df.to_json(orient="split"), params, status
+    # The surrounding dcc.Loading component provides feedback while this callback
+    # is active. Clear the status region after a successful fetch so a completed
+    # "Loading" message does not remain above the results.
+    return matches_df.to_json(orient="split"), params, html.Div()
 
 
 @dash_app.callback(
@@ -1561,17 +1748,17 @@ def compute_and_render_scores(matches_json, params):
     table_df["compound_link"] = table_df.apply(
         lambda row: (
             ("🔁 " if row.get("structure_key") in _duplicate_structure_keys else "")
-            + f"[{row['top_compound']}](/dashinterface2/?task={urllib.parse.quote(str(task_id))}"
-            f"&workflow={urllib.parse.quote(str(workflow_choice))}"
-            f"{score_weight_query_suffix}"
-            f"{ppm_query_suffix}"
-            f"&scan={urllib.parse.quote(str(row['scan']))}"
-            + (
-                f"&qe={row['query_entropy']}"
-                if row.get("query_entropy") is not None
-                else ""
+            + f"[{row['top_compound']}]"
+            + "("
+            + _build_scan_detail_href(
+                task_id,
+                workflow_choice,
+                score_weight_query_suffix,
+                ppm_query_suffix,
+                row["scan"],
+                row.get("query_entropy"),
             )
-            + "&detail=1)"
+            + ")"
         ),
         axis=1,
     )
@@ -1614,119 +1801,102 @@ def compute_and_render_scores(matches_json, params):
         style={"height": "760px", "width": "100%"},
     )
 
-    return html.Div(
+    overview = _build_results_overview(
+        summary_df,
+        badge_counts,
+        task_id,
+        workflow_choice,
+        score_weight_query_suffix,
+        ppm_query_suffix,
+        task_metadata_details,
+    )
+
+    table_card = dbc.Card(
         [
-            dbc.Card(
+            dbc.CardHeader(html.H5("All scan annotations", className="mb-0")),
+            dbc.CardBody(
                 [
-                    dbc.CardHeader(html.H5("Annotation Evidence Summary")),
-                    dbc.CardBody(
+                    html.Div(
                         [
-                            html.P(
-                                [
-                                    "Task: ",
-                                    html.A(
-                                        task_id,
-                                        href=f"https://gnps2.org/status?task={task_id}",
-                                        target="_blank",
-                                    ),
-                                    " · Scoring: structure agreement, WCRS Tanimoto, cosine consistency, shared peaks",
-                                ]
-                            ),
                             html.Small(
                                 _format_score_weight_summary(score_weights),
-                                className="text-muted d-block mb-2",
+                                className="text-muted",
                             ),
-                            task_metadata_details,
                             (
                                 dbc.Badge(
                                     "Custom score weights active",
                                     color="warning",
                                     text_color="dark",
-                                    className="me-2",
+                                    className="ms-2",
                                 )
                                 if custom_score_weights_active
                                 else None
                             ),
-                            dbc.Badge(
-                                f"Consistent evidence: {badge_counts['Consistent evidence']}",
-                                color="success",
-                                className="me-2",
-                            ),
-                            dbc.Badge(
-                                f"Inconclusive: {badge_counts['Inconclusive']}",
-                                color="warning",
-                                className="me-2",
-                            ),
-                            dbc.Badge(
-                                f"Inconsistent evidence: {badge_counts['Inconsistent evidence']}",
-                                color="danger",
-                            ),
-                        ]
+                        ],
+                        className="mb-3",
                     ),
-                ],
-                className="mb-3",
-            ),
-            dbc.Card(
-                [
-                    dbc.CardHeader(html.H5("Scan-Level Annotations")),
-                    dbc.CardBody(
+                    dbc.Row(
                         [
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        html.Small(
-                                            "Click a proposed compound to open the detail view with structure images and mirror-plot links.",
-                                            className="text-muted",
-                                        ),
-                                    ),
-                                    dbc.Col(
-                                        html.Div(
-                                            [
-                                                dbc.Button(
-                                                    "⬇ Export CSV",
-                                                    id="download-csv-btn",
-                                                    color="outline-secondary",
-                                                    size="sm",
-                                                    className="me-2",
-                                                ),
-                                                dbc.DropdownMenu(
-                                                    label="Columns",
-                                                    children=dbc.Checklist(
-                                                        id="column-visibility-checklist",
-                                                        options=[
-                                                            {
-                                                                "label": col[
-                                                                    "headerName"
-                                                                ]
-                                                                .split("(")[0]
-                                                                .strip(),
-                                                                "value": col["field"],
-                                                            }
-                                                            for col in _SUMMARY_COLUMN_DEFS
-                                                        ],
-                                                        value=list(initial_visible),
-                                                        className="px-3 py-2",
-                                                        style={"minWidth": "220px"},
-                                                    ),
-                                                    size="sm",
-                                                    align_end=True,
-                                                ),
-                                            ],
-                                            className="d-flex align-items-center",
-                                        ),
-                                        width="auto",
-                                    ),
-                                ],
-                                align="center",
-                                className="mb-2",
+                            dbc.Col(
+                                html.Small(
+                                    "Click a proposed compound to inspect its evidence in detail.",
+                                    className="text-muted",
+                                ),
                             ),
-                            html.Hr(className="mt-0"),
-                            results_table,
-                        ]
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        dbc.Button(
+                                            "⬇ Export CSV",
+                                            id="download-csv-btn",
+                                            color="outline-secondary",
+                                            size="sm",
+                                            className="me-2",
+                                        ),
+                                        dbc.DropdownMenu(
+                                            label="Columns",
+                                            children=dbc.Checklist(
+                                                id="column-visibility-checklist",
+                                                options=[
+                                                    {
+                                                        "label": col["headerName"]
+                                                        .split("(")[0]
+                                                        .strip(),
+                                                        "value": col["field"],
+                                                    }
+                                                    for col in _SUMMARY_COLUMN_DEFS
+                                                ],
+                                                value=list(initial_visible),
+                                                className="px-3 py-2",
+                                                style={"minWidth": "220px"},
+                                            ),
+                                            size="sm",
+                                            align_end=True,
+                                        ),
+                                    ],
+                                    className="d-flex align-items-center",
+                                ),
+                                width="auto",
+                            ),
+                        ],
+                        align="center",
+                        className="mb-2",
                     ),
+                    html.Hr(className="mt-0"),
+                    results_table,
                 ]
             ),
-        ]
+        ],
+        className="border-0 shadow-sm",
+        style={"borderRadius": "18px"},
+    )
+
+    return dbc.Tabs(
+        [
+            dbc.Tab(overview, label="Overview", tab_id="overview", className="pt-3"),
+            dbc.Tab(table_card, label="Scan table", tab_id="scan-table", className="pt-3"),
+        ],
+        active_tab="overview",
     )
 
 

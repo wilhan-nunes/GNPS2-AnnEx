@@ -118,7 +118,11 @@ def _normalize_library_matches_dataframe(df):
     work_df = _harmonize_metadata(work_df)
     work_df = _derive_smiles_from_inchi(work_df)
     work_df = _propagate_structure_by_name(work_df)
-    work_df = _pubchem_structure_fallback(work_df)
+    # PubChem name-lookup fallback is disabled for now: it does per-row network
+    # calls and is very slow. Flip _ENABLE_PUBCHEM_STRUCTURE_FALLBACK back on
+    # (or make it faster) to re-enable. See _pubchem_structure_fallback below.
+    if _ENABLE_PUBCHEM_STRUCTURE_FALLBACK:
+        work_df = _pubchem_structure_fallback(work_df)
     return work_df
 
 
@@ -383,6 +387,12 @@ def _fetch_structure_from_pubchem(name: str):
         return p.get("IsomericSMILES"), p.get("InChIKey")
     except Exception:
         return None, None
+
+
+# Feature flag: PubChem name-lookup structure fallback. Disabled because it
+# performs one network request per unresolved row, which is very slow on large
+# tables. Set to True to re-enable (ideally after batching/caching the lookups).
+_ENABLE_PUBCHEM_STRUCTURE_FALLBACK = False
 
 
 def _pubchem_structure_fallback(df: pd.DataFrame) -> pd.DataFrame:
