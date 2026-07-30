@@ -24,3 +24,12 @@ SUPPORT_BETA = 1.0
 
 # Library diversity soft-cap: min(unique_source_libraries, K) / K → [0, 1].
 K_LIBRARY_DIVERSITY = 5
+
+# All-unknown-structure penalty.
+# Applied when every hit in a scan lacks BOTH a SMILES and an InChIKey, i.e. the
+# scan has no structural evidence at all. Without a structure we cannot offer a
+# confident annotation, so the score is demoted regardless of spectral quality.
+#   penalized = min(score × UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP)
+# UNKNOWN_STRUCTURE_PENALTY = 1.0 disables the multiplier; CAP = 100.0 disables the cap.
+UNKNOWN_STRUCTURE_PENALTY = 0.5   # multiplicative demotion (preserves spectral ranking)
+UNKNOWN_STRUCTURE_CAP = 55.0      # hard ceiling: an all-unknown scan can never read green
