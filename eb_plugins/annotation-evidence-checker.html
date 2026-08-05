@@ -1,0 +1,964 @@
+<!doctype html>
+<!--
+  Annotation Evidence Checker — a Feature Finder plugin.
+
+  Ports TopKonfidence's (bin/scorer.py) per-scan confidence score into the
+  Feature Finder app as a client-side view over its own exact library-search
+  results, so a user gets the same "how much should I trust this annotation"
+  signal without leaving the app or standing up TopKonfidence separately.
+
+  Reads ONE result file (absent until a library search has run -> 404 is
+  normal "no hits yet"):
+    GET /api/out/library_matches.tsv   -> exact hits (same precursor mass)
+
+  Scoring, ported from bin/scorer.py's _compute_scan_level_confidence /
+  _compute_confidence_score (see DEFAULT_SCORE_WEIGHTS below), grouped by
+  query_scan (== a feature's row ID):
+
+    score = 100 * ( 0.40 * structure_agreement
+                   + 0.15 * tanimoto_score
+                   + 0.20 * cosine_consistency
+                   + 0.15 * max_cosine
+                   + 0.05 * shared_peaks_score
+                   + 0.05 * library_diversity_score )
+    then an all-unknown-structure penalty (see UNKNOWN_STRUCTURE_* below).
+
+  IMPORTANT DEVIATION FROM bin/scorer.py — read before trusting a score:
+  Real Tanimoto needs ECFP4 fingerprints (RDKit). RDKit.js is not in this
+  plugin's CDN allow-list and isn't vendored same-origin like smiles-drawer
+  is (it's a multi-MB WASM build) — see WRITING-PLUGINS.md's CSP rules — so
+  it cannot be loaded here. Structure grouping instead uses an exact-string
+  key (InChIKey > raw SMILES > InChI), same as bin/scorer.py's own fallback
+  chain when SMILES can't be used for real Tanimoto (scan_tanimoto's
+  "structure_agreement_fallback" path) — NOT RDKit-canonicalized, so e.g.
+  two differently-written SMILES for the same molecule won't be merged, and
+  positional isomers are never merged into one group. tanimoto_score is
+  therefore always the winning group's support_fraction, never a true
+  fingerprint similarity. See RDKIT_HOOK below for where a future
+  RDKit.js integration would plug in once it's allow-listed/vendored.
+
+  Also unavailable client-side, so treated as "no data -> no penalty" exactly
+  like bin/scorer.py does when its own optional columns are missing:
+    - mz_precision: library_matches.tsv carries no ppm error column -> 1.0.
+    - query_entropy: not shown (would need a JS port of
+      spectral_entropy_v2.py's entropy math; out of scope for this plugin).
+
+  shared_peaks_score DOES upgrade to the real coverage_fraction path (shared /
+  query_peak_count, per bin/scorer.py) once a scan is selected: the table's
+  list-level score uses the soft x/(x+K) fallback (no per-scan fetch at load
+  time — could be thousands of scans), but selectScan() calls POST /api/spectra
+  ("query <row ID>") to get the query's real peaks, filters them the same way
+  get_filtered_query_peak_count_from_mgf does (noise threshold + max-peak cap,
+  see ENTROPY_NOISE_THRESHOLD/ENTROPY_MAX_PEAK_NUM), and re-renders the detail
+  panel with the refined score. The list score and the just-opened detail score
+  can therefore differ slightly — same as TopKonfidence's own dashboard, where
+  the detail panel re-fetches and re-scores the single selected scan.
+
+  Two more panels beyond the score breakdown, both scoped to the selected scan:
+    - "Alternative possible structures" — the losing structure groups this
+      scan's hits fell into (computeScanScores keeps the full ranked group
+      list, not just the winner), so a low structure_agreement score comes
+      with the actual competing candidates, not just a number.
+    - "Biological context (MASST/REDU)" — ported from components.py's
+      _build_masst_context_card, queried per structure group (winner +
+      alternates) and lazy-loaded on accordion expand. This calls
+      https://masst-records.gnps2.org, an OFF-ORIGIN host NOT in this
+      plugin's CDN allow-list (see WRITING-PLUGINS.md's CSP rules) — whether
+      it works depends on whether the app maintainers have allow-listed it
+      for this build. fetchMasstContext() degrades to a visible "blocked by
+      this build's plugin CSP" message rather than failing silently if it's
+      rejected.
+
+  Constraints (see WRITING-PLUGINS.md):
+    - Cross-origin isolated + a strict CSP. Load Plotly from its real CDN URL
+      (rewritten to a same-origin /api/ext copy, so it also works offline);
+      load smiles-drawer from the same-origin /vendor path. No other
+      off-origin host is reachable.
+    - Absolute API paths (/api/...) so they resolve against the app's origin.
+    - Resolve TSV columns BY NAME — the engine adds/reorders them between
+      versions, and per-library metadata columns vary by which libraries ran.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ff-plugin-name" content="Annotation Evidence Checker">
+<meta name="ff-plugin-description" content="Per-scan confidence score for exact library annotations, ported from TopKonfidence's scoring model.">
+<meta name="ff-plugin-version" content="1">
+<title>Annotation Evidence Checker</title>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="/vendor/smilesdrawer/smiles-drawer.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 system-ui, sans-serif;
+    display: grid; grid-template-columns: minmax(360px, 46%) 1fr;
+    gap: 10px; padding: 10px; height: 100vh;
+  }
+  #left  { display: flex; flex-direction: column; min-height: 0; }
+  #right { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .panel { border: 1px solid rgba(128,128,128,.35); border-radius: 6px; padding: 8px; min-height: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 6px; opacity: .7; }
+  .toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  #search { flex: 1; min-width: 120px; padding: 5px 7px; font: inherit; }
+  select#label-filter { padding: 5px 7px; font: inherit; }
+  #tablewrap { flex: 1; min-height: 0; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: right; padding: 3px 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.name, th.name { text-align: left; white-space: normal; max-width: 220px; }
+  th { position: sticky; top: 0; background: Canvas; border-bottom: 1px solid rgba(128,128,128,.4); cursor: pointer; user-select: none; }
+  th .arrow { opacity: .5; font-size: 10px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: rgba(128,128,128,.12); }
+  tbody tr.sel { background: rgba(64,132,255,.22); }
+  .msg { padding: 16px; opacity: .75; }
+  .summary { opacity: .7; margin-bottom: 6px; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge-success { background: rgba(34,197,94,.18); color: #16a34a; }
+  .badge-warning { background: rgba(234,179,8,.20); color: #a16207; }
+  .badge-danger  { background: rgba(239,68,68,.18); color: #dc2626; }
+  .placeholder { opacity: .55; display: grid; place-items: center; height: 100%; min-height: 200px; }
+
+  /* ---- detail / breakdown panel ---- */
+  #detail-head { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+  #detail-sub { opacity: .7; margin-bottom: 10px; }
+  .detail-top { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: start; margin-bottom: 12px; }
+  #structure { border: 1px solid rgba(128,128,128,.25); border-radius: 6px; display: grid; place-items: center; min-height: 100px; padding: 4px; }
+  #structure .nostruct { opacity: .5; font-size: 11px; text-align: center; }
+  .struct-clickable { cursor: zoom-in; }
+  .struct-clickable:hover { background: rgba(64,132,255,.10); }
+  .gauge-wrap { text-align: center; }
+  .gauge-score { font-size: 26px; font-weight: 800; }
+  .gauge-sublabel { font-size: 10px; opacity: .6; text-transform: uppercase; letter-spacing: .04em; }
+  .warn-box {
+    margin: 6px 0 10px; padding: 6px 9px; border-radius: 6px; font-size: 12px;
+    background: rgba(234,179,8,.12); border: 1px solid rgba(234,179,8,.35);
+  }
+  table.breakdown { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  table.breakdown th { position: static; text-align: left; font-size: 11px; text-transform: uppercase; opacity: .6; border-bottom: 1px solid rgba(128,128,128,.3); padding: 4px 6px; }
+  table.breakdown td { text-align: left; padding: 5px 6px; border-bottom: 1px dotted rgba(128,128,128,.2); white-space: normal; }
+  td.metric-name { font-weight: 600; }
+  td.metric-note { opacity: .6; font-size: 11px; }
+  .bar-track { background: rgba(128,128,128,.18); border-radius: 4px; height: 8px; width: 100%; min-width: 70px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; background: #3b82f6; }
+  .bar-cell { display: flex; align-items: center; gap: 6px; }
+  .bar-val { font-size: 11px; opacity: .75; min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, monospace; }
+
+  .section-h { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .65; margin: 16px 0 6px; }
+  .alt-list { display: flex; flex-direction: column; gap: 6px; }
+  .alt-card { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; align-items: center;
+    border: 1px solid rgba(128,128,128,.25); border-radius: 6px; padding: 6px 8px; }
+  .alt-card .struct-mini { width: 52px; height: 40px; display: grid; place-items: center; }
+  .alt-card .struct-mini .nostruct { font-size: 9px; opacity: .5; text-align: center; }
+  .alt-card .alt-name { font-weight: 600; }
+  .alt-card .alt-meta { font-size: 11px; opacity: .65; }
+  .alt-card .alt-stat { font-size: 11px; text-align: right; white-space: nowrap; }
+  .empty-note { opacity: .55; font-size: 12px; padding: 6px 2px; }
+
+  .masst-group { border: 1px solid rgba(128,128,128,.3); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+  .masst-group > summary { cursor: pointer; padding: 6px 9px; font-weight: 600; font-size: 12px; list-style: none; }
+  .masst-group > summary::-webkit-details-marker { display: none; }
+  .masst-group > summary::before { content: "▸ "; opacity: .6; }
+  .masst-group[open] > summary::before { content: "▾ "; }
+  .masst-body { padding: 4px 9px 10px; }
+  .masst-plot { width: 100%; height: 220px; }
+  .masst-loading { opacity: .6; font-size: 12px; padding: 8px; }
+  .masst-blocked { font-size: 12px; padding: 8px 9px; background: rgba(239,68,68,.10); border-top: 1px dashed rgba(239,68,68,.3); }
+
+  /* ---- structure inspection modal ---- */
+  #struct-modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.55); align-items: center; justify-content: center;
+  }
+  #struct-modal-overlay.open { display: flex; }
+  #struct-modal {
+    background: Canvas; color: CanvasText; border-radius: 10px; padding: 16px;
+    max-width: min(92vw, 480px); box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #struct-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  #struct-modal-title { font-size: 15px; font-weight: 700; }
+  #struct-modal-sub { font-size: 12px; opacity: .65; margin-top: 2px; word-break: break-all; }
+  #struct-modal-close {
+    border: none; background: rgba(128,128,128,.18); color: inherit; border-radius: 999px;
+    width: 26px; height: 26px; cursor: pointer; font-size: 14px; line-height: 1; flex: none;
+  }
+  #struct-modal-close:hover { background: rgba(128,128,128,.32); }
+  #struct-modal-body { display: grid; place-items: center; min-height: 260px; }
+</style>
+
+<div id="left" class="panel">
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="filter compound / scan…" autocomplete="off">
+    <select id="label-filter">
+      <option value="">all labels</option>
+      <option value="Consistent evidence">Consistent evidence</option>
+      <option value="Inconclusive">Inconclusive</option>
+      <option value="Inconsistent evidence">Inconsistent evidence</option>
+      <option value="Structure unknown">Structure unknown</option>
+    </select>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div id="tablewrap"><div class="msg">Loading annotations…</div></div>
+</div>
+
+<div id="right" class="panel">
+  <h2>Evidence breakdown</h2>
+  <div id="detail"><div class="placeholder">Select a scan on the left to see its confidence breakdown.</div></div>
+</div>
+
+<div id="struct-modal-overlay">
+  <div id="struct-modal" role="dialog" aria-modal="true" aria-labelledby="struct-modal-title">
+    <div id="struct-modal-head">
+      <div>
+        <div id="struct-modal-title"></div>
+        <div id="struct-modal-sub"></div>
+      </div>
+      <button id="struct-modal-close" aria-label="Close" type="button">✕</button>
+    </div>
+    <div id="struct-modal-body"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---- ported constants (bin/constants.py) -------------------------------------
+const K_SHARED_PEAKS = 5;
+const K_LIBRARY_DIVERSITY = 5;
+const SUPPORT_ALPHA = 1.0;
+const SUPPORT_BETA = 1.0;
+const UNKNOWN_STRUCTURE_PENALTY = 0.5;
+const UNKNOWN_STRUCTURE_CAP = 55.0;
+
+// Same filter bin/spectral_entropy_v2.py applies before entropy/cosine matching
+// (see get_filtered_query_peak_count_from_mgf in bin/mgf_loader.py) — used to turn
+// a raw /api/spectra peak list into the "effective" peak count for shared_peaks'
+// coverage_fraction path.
+const ENTROPY_NOISE_THRESHOLD = 0.01;
+const ENTROPY_MAX_PEAK_NUM = 100;
+
+// Weights are pre-normalised (sum = 1.0). See bin/scorer.py DEFAULT_SCORE_WEIGHTS.
+// "tanimoto" here is NOT true Tanimoto similarity — see the file header / RDKIT_HOOK.
+const DEFAULT_SCORE_WEIGHTS = {
+  structure_agreement: 40 / 100,
+  tanimoto:             15 / 100,
+  cosine_consistency:   20 / 100,
+  max_cosine:           15 / 100,
+  shared_peaks:          5 / 100,
+  library_diversity:     5 / 100,
+};
+
+function confidenceCategory(score) {
+  if (score >= 80) return ["Consistent evidence", "success"];
+  if (score >= 55) return ["Inconclusive", "warning"];
+  return ["Inconsistent evidence", "danger"];
+}
+
+// ---- data model ---------------------------------------------------------------
+let RAW = { cols: [], rows: [] };     // parsed library_matches.tsv
+let SCANS = [];                        // per-scan aggregate rows (the score)
+let sort = { key: "confidence_score", dir: -1 };
+let filter = "";
+let labelFilter = "";
+let selectedScan = null;
+
+const $ = (id) => document.getElementById(id);
+
+const NULLS = new Set(["", "nan", "none", "null", "n/a", "na"]);
+function isValid(v) { return v != null && !NULLS.has(String(v).trim().toLowerCase()); }
+
+function pickCol(cols, candidates) {
+  const lower = new Map(cols.map((c) => [c.toLowerCase(), c]));
+  for (const cand of candidates) {
+    const hit = lower.get(cand.toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function parseTsv(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.length);
+  if (lines.length < 2) return { cols: [], rows: [] };
+  const cols = lines[0].split("\t");
+  const rows = lines.slice(1).map((l) => {
+    const parts = l.split("\t");
+    const row = {};
+    cols.forEach((h, i) => (row[h] = parts[i] ?? ""));
+    return row;
+  });
+  return { cols, rows };
+}
+
+async function boot() {
+  try {
+    const res = await fetch("/api/out/library_matches.tsv");
+    if (!res.ok) {
+      $("summary").textContent = "";
+      $("tablewrap").innerHTML =
+        '<div class="msg">No library annotations yet. In the app, run feature finding with at ' +
+        'least one spectral library enabled — a search runs automatically and its results ' +
+        'appear here. (This plugin only works in the local desktop build.)</div>';
+      return;
+    }
+    RAW = parseTsv(await res.text());
+  } catch (_) {
+    $("tablewrap").innerHTML = '<div class="msg">Failed to load library_matches.tsv.</div>';
+    return;
+  }
+  if (!RAW.rows.length) {
+    $("tablewrap").innerHTML = '<div class="msg">library_matches.tsv has no rows.</div>';
+    return;
+  }
+  SCANS = computeScanScores(RAW);
+  renderTable();
+}
+
+// ---- column resolution (by name — widths/order vary by which libraries ran) ---
+let COLMAP = null;
+function resolveColumns(cols) {
+  if (COLMAP) return COLMAP;
+  COLMAP = {
+    scan: pickCol(cols, ["query_scan", "#Scan#", "scan", "Scan"]),
+    cosine: pickCol(cols, ["cosine", "MQScore", "Cosine"]),
+    compound: pickCol(cols, ["Compound_Name", "NAME", "compound_name", "Compound Name"]),
+    smiles: pickCol(cols, ["SMILES", "Smiles", "smiles"]),
+    inchikey: pickCol(cols, ["InChIKey", "inchikey", "INCHIKEY"]),
+    inchi: pickCol(cols, ["INCHI", "InChI", "inchi"]),
+    sharedPeaks: pickCol(cols, ["matched_peaks", "SharedPeaks", "shared_peaks"]),
+    library: pickCol(cols, ["library_filename", "LibraryName", "library"]),
+  };
+  return COLMAP;
+}
+
+// ---- structure key -------------------------------------------------------------
+// RDKIT_HOOK: bin/scorer.py's _canonical_structure_key uses RDKit to strip
+// stereochemistry and canonicalize, so e.g. two differently-drawn SMILES for the
+// same molecule collapse to one key, and _build_positional_isomer_group_key
+// further merges positional isomers via a Murcko-scaffold + side-chain key. This
+// plugin cannot load RDKit (see file header), so it falls back to exact-string
+// matching: InChIKey first block > raw SMILES text > raw InChI text. When
+// RDKit.js becomes available same-origin (vendored, like smiles-drawer), swap
+// this function for calls into it and this whole grouping step gets sharper —
+// no other part of the pipeline below needs to change.
+function structureKey(row, col) {
+  const ik = isValid(row[col.inchikey]) ? row[col.inchikey].trim() : "";
+  if (ik) return ik.split("-")[0];
+  const smi = col.smiles && isValid(row[col.smiles]) ? row[col.smiles].trim() : "";
+  if (smi) return "SMILES:" + smi;
+  const inchi = col.inchi && isValid(row[col.inchi]) ? row[col.inchi].trim() : "";
+  if (inchi) return "INCHI:" + inchi;
+  return "UNKNOWN_STRUCTURE";
+}
+
+function hasStructure(row, col) {
+  const smi = col.smiles ? row[col.smiles] : "";
+  const ik = col.inchikey ? row[col.inchikey] : "";
+  return isValid(smi) || isValid(ik);
+}
+
+// The InChIKey first block (structural layer) is what MASST/REDU biological
+// context is queried by. Unlike structureKey() this deliberately does NOT fall
+// back to a SMILES/InChI string — MASST only understands InChIKey blocks.
+function inchikeyBlock(row, col) {
+  const ik = col.inchikey && isValid(row[col.inchikey]) ? row[col.inchikey].trim() : "";
+  if (!ik) return null;
+  const block = ik.split("-")[0];
+  return block.length >= 5 ? block : null;
+}
+
+// ---- query peak count, for the shared_peaks "coverage_fraction" path ----------
+// bin/scorer.py prefers shared / query_peak_count (get_filtered_query_peak_count_
+// from_mgf) over the soft x/(x+K) normalization when a query's peak count is
+// known. That count comes from the task's local MGF there; here the nearest
+// equivalent is POST /api/spectra "query <row ID>", filtered the same way.
+const peakCountCache = new Map();
+
+function filteredPeakCount(peaks) {
+  if (!peaks || !peaks.length) return 0;
+  const maxIntensity = Math.max(...peaks.map((p) => p[1]));
+  if (maxIntensity <= 0) return peaks.length;
+  let filtered = peaks.filter((p) => p[1] >= ENTROPY_NOISE_THRESHOLD * maxIntensity);
+  if (filtered.length > ENTROPY_MAX_PEAK_NUM) {
+    filtered = filtered.slice().sort((a, b) => b[1] - a[1]).slice(0, ENTROPY_MAX_PEAK_NUM);
+  }
+  return filtered.length;
+}
+
+async function fetchQueryPeakCount(scan) {
+  if (peakCountCache.has(scan)) return peakCountCache.get(scan);
+  let count = null;
+  try {
+    const res = await fetch("/api/spectra", { method: "POST", body: `query ${scan}\n` });
+    if (res.ok) {
+      const data = await res.json();
+      const rec = data[`query|${scan}`];
+      if (rec && rec.peaks) count = filteredPeakCount(rec.peaks);
+    }
+  } catch (_) { /* leave count null — fall back to soft normalization */ }
+  peakCountCache.set(scan, count);
+  return count;
+}
+
+// ---- MASST/REDU biological context ---------------------------------------------
+// Ported from components.py::_fetch_masst_context_cached. This hits an OFF-ORIGIN
+// host (masst-records.gnps2.org), which is NOT in this plugin's CDN allow-list
+// (see WRITING-PLUGINS.md's CSP rules) — it may be blocked outright depending on
+// whether the app maintainers have allow-listed it for this build. We try the
+// fetch and degrade to a clear "blocked" message rather than failing silently.
+const MASST_API_URL = "https://masst-records.gnps2.org/masst_records.json?sql=";
+const masstCache = new Map();
+
+function buildMasstSql(blocks) {
+  const inClause = blocks.map((b) => `'${b.replace(/'/g, "''")}'`).join(", ");
+  return `
+WITH filtered AS (
+  SELECT m.mri_id_int, m.spectrum_id_int
+  FROM masst_table m
+  WHERE m.spectrum_id_int IN (
+    SELECT spectrum_id_int FROM library_table
+    WHERE InChIKey_smiles_firstBlock IN (${inClause})
+  )
+),
+best_per_mri AS (
+  SELECT mri_id_int, COUNT(DISTINCT spectrum_id_int) AS unique_spectra
+  FROM filtered GROUP BY mri_id_int
+)
+SELECT rd.SampleType, rd.UBERONBodyPartName,
+       COUNT(*) AS num_samples,
+       SUM(b.unique_spectra) AS total_spectra
+FROM best_per_mri b
+JOIN redu_table rd ON b.mri_id_int = rd.mri_id_int
+WHERE rd.SampleType IS NOT NULL AND rd.SampleType != ''
+GROUP BY rd.SampleType, rd.UBERONBodyPartName
+ORDER BY num_samples DESC
+LIMIT 100
+`.trim();
+}
+
+async function fetchMasstContext(blocks) {
+  const key = blocks.slice().sort().join(",");
+  if (masstCache.has(key)) return masstCache.get(key);
+  const sql = buildMasstSql(blocks);
+  let result;
+  try {
+    const res = await fetch(MASST_API_URL + encodeURIComponent(sql));
+    if (!res.ok) {
+      result = { blocked: false, error: `HTTP ${res.status}`, rows: [] };
+    } else {
+      const data = await res.json();
+      result = (data && data.ok && Array.isArray(data.rows))
+        ? { blocked: false, rows: data.rows }
+        : { blocked: false, rows: [] };
+    }
+  } catch (_) {
+    // A CSP-blocked fetch or network-level CORS rejection lands here.
+    result = { blocked: true, rows: [] };
+  }
+  masstCache.set(key, result);
+  return result;
+}
+
+// ---- scoring, ported from bin/scorer.py::_compute_scan_level_confidence -------
+function computeScanScores(data) {
+  const col = resolveColumns(data.cols);
+  if (!col.scan || !col.cosine) return [];
+
+  const byScan = new Map();
+  for (const row of data.rows) {
+    const scan = row[col.scan];
+    if (!byScan.has(scan)) byScan.set(scan, []);
+    byScan.get(scan).push(row);
+  }
+
+  const out = [];
+  for (const [scan, hits] of byScan.entries()) {
+    const total = hits.length;
+
+    for (const r of hits) {
+      r._cosine = parseFloat(r[col.cosine]) || 0;
+      r._sharedPeaks = col.sharedPeaks ? (parseFloat(r[col.sharedPeaks]) || 0) : 0;
+      r._structKey = structureKey(r, col);
+      r._hasStructure = hasStructure(r, col);
+      r._compound = r[col.compound] || "Unknown";
+      r._library = col.library ? (r[col.library] || "") : "";
+      r._inchikeyBlock = inchikeyBlock(r, col);
+      r._smiles = col.smiles ? r[col.smiles] : "";
+    }
+
+    const missingStructures = hits.filter((r) => !r._hasStructure).length;
+    const allUnknown = missingStructures >= total;
+
+    // Group by structure key, largest group first (ties broken by max cosine).
+    // Rows lacking structure never inflate support counts — each gets its own
+    // sentinel key, mirroring _annotate_support_groups.
+    const groups = new Map();
+    hits.forEach((r, i) => {
+      const effKey = r._hasStructure ? r._structKey : `UNKNOWN_${i}`;
+      if (!groups.has(effKey)) groups.set(effKey, []);
+      groups.get(effKey).push(r);
+    });
+    const groupList = [...groups.entries()].map(([key, rows]) => {
+      const cosines = rows.map((r) => r._cosine);
+      const mean = cosines.reduce((a, b) => a + b, 0) / cosines.length;
+      const variance = cosines.length > 1
+        ? cosines.reduce((a, b) => a + (b - mean) ** 2, 0) / (cosines.length - 1)
+        : 0;
+      const rep = rows.slice().sort((a, b) => b._cosine - a._cosine)[0];
+      return {
+        key,
+        rows,
+        count: rows.length,
+        meanCosine: mean,
+        stdCosine: Math.sqrt(variance),
+        maxCosine: Math.max(...cosines),
+        representative: rep,
+      };
+    }).sort((a, b) => (b.count - a.count) || (b.maxCosine - a.maxCosine) || (b.meanCosine - a.meanCosine));
+
+    const best = groupList[0];
+    const representative = best.representative;
+    const topCompound = representative._compound;
+    // Losing structure groups, capped, for the "alternative possible structures"
+    // panel — the candidates the winning group beat out for this scan.
+    const alternativeGroups = groupList.slice(1, 6);
+
+    // support_fraction: Bayesian shrinkage toward 0.5 for low-n scans.
+    const supportFraction = total ? (best.count + SUPPORT_ALPHA) / (total + SUPPORT_ALPHA + SUPPORT_BETA) : 0;
+
+    // tanimoto_score: no RDKit available -> always the structure_agreement
+    // fallback (bin/scorer.py's scan_tanimoto "structure_agreement_fallback"
+    // path). See structureKey()'s RDKIT_HOOK comment.
+    const tanimotoScore = supportFraction;
+    const tanimotoSource = "structure_agreement_fallback (no RDKit — placeholder for future RDKit.js)";
+
+    const meanCosine = best.meanCosine;
+    const maxCosine = best.maxCosine;
+
+    // shared_peaks: no query MGF peak count available client-side -> always
+    // soft normalization x/(x+K), never the coverage_fraction path.
+    const rawSharedPeaks = best.rows.reduce((a, r) => a + r._sharedPeaks, 0) / best.rows.length;
+    const sharedPeaksScore = rawSharedPeaks / (rawSharedPeaks + K_SHARED_PEAKS);
+
+    // library_diversity: unique library files within the winning group.
+    const uniqueLibs = new Set(best.rows.map((r) => r._library).filter((l) => isValid(l)));
+    const libraryDiversityScore = Math.min(uniqueLibs.size, K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY;
+
+    // cosine_consistency: 1 - clamp(std/mean, 0, 1); undefined for single-hit groups.
+    let cosineConsistency = 0.0, cosineConsistencySource = "single_hit_undefined";
+    if (best.count >= 2) {
+      const cv = meanCosine > 0 ? best.stdCosine / meanCosine : 1.0;
+      cosineConsistency = Math.max(0.0, 1.0 - Math.min(1.0, cv));
+      cosineConsistencySource = "cosine_consistency";
+    }
+
+    // mz_precision: no ppm error column in library_matches.tsv -> no penalty.
+    const mzPrecision = 1.0;
+
+    const weights = DEFAULT_SCORE_WEIGHTS;
+    let score = 100.0 * (
+      weights.structure_agreement * supportFraction +
+      weights.tanimoto * tanimotoScore +
+      weights.cosine_consistency * cosineConsistency +
+      weights.max_cosine * maxCosine +
+      weights.shared_peaks * sharedPeaksScore +
+      weights.library_diversity * libraryDiversityScore
+    );
+    score = Math.min(100, Math.max(0, score)) * mzPrecision;
+
+    if (allUnknown) {
+      score = Math.min(score * UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP);
+    }
+    score = Math.min(100, Math.max(0, score));
+
+    let label, badge;
+    if (allUnknown) {
+      [, badge] = confidenceCategory(score);
+      label = "Structure unknown";
+    } else {
+      [label, badge] = confidenceCategory(score);
+    }
+
+    out.push({
+      scan, topCompound, total, missingStructures, allUnknown,
+      supportingMatches: best.count,
+      structureKey: best.key,
+      meanCosine, maxCosine, cosineConsistency, cosineConsistencySource,
+      tanimotoScore, tanimotoSource,
+      sharedPeaksRaw: rawSharedPeaks, sharedPeaksScore,
+      libraryDiversityScore, libraryDiversityCount: uniqueLibs.size,
+      supportFraction, mzPrecision,
+      confidence_score: Math.round(score * 10) / 10,
+      confidence_label: label, badge_color: badge,
+      representative, alternativeGroups,
+    });
+  }
+
+  out.sort((a, b) => (b.confidence_score - a.confidence_score) || (b.supportingMatches - a.supportingMatches));
+  return out;
+}
+
+// ---- table ----------------------------------------------------------------------
+const COLS = [
+  { key: "scan",              label: "Scan",       num: true },
+  { key: "topCompound",       label: "Compound",   num: false, cls: "name" },
+  { key: "confidence_score",  label: "Score",      num: true, fmt: (v) => v.toFixed(1) },
+  { key: "confidence_label",  label: "Label",      num: false },
+  { key: "supportingMatches", label: "Support",    num: true, fmt: (v, r) => `${v}/${r.total}` },
+  { key: "maxCosine",         label: "Max cosine", num: true, fmt: (v) => v.toFixed(3) },
+];
+
+function badgeHtml(label, color) {
+  return `<span class="badge badge-${color}">${escapeHtml(label)}</span>`;
+}
+
+function activeRows() {
+  let rows = SCANS;
+  if (labelFilter) rows = rows.filter((r) => r.confidence_label === labelFilter);
+  const f = filter.trim().toLowerCase();
+  if (f) rows = rows.filter((r) => `${r.scan} ${r.topCompound}`.toLowerCase().includes(f));
+  const { key, dir } = sort;
+  const numeric = COLS.find((c) => c.key === key)?.num;
+  return rows.slice().sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (numeric) return ((parseFloat(av) || 0) - (parseFloat(bv) || 0)) * dir;
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+}
+
+function renderTable() {
+  const rows = activeRows();
+  const nConsistent = SCANS.filter((r) => r.confidence_label === "Consistent evidence").length;
+  $("summary").textContent =
+    `${rows.length} of ${SCANS.length} scan(s) scored, ${nConsistent} at Consistent evidence. ` +
+    `Structure grouping uses exact-string matching (no RDKit) — see the score panel for detail.`;
+
+  const head = COLS.map((c) => {
+    const arrow = sort.key === c.key ? `<span class="arrow">${sort.dir < 0 ? "▼" : "▲"}</span>` : "";
+    return `<th class="${c.cls || ""}" data-key="${c.key}">${c.label} ${arrow}</th>`;
+  }).join("");
+
+  const body = rows.map((r) => {
+    const cells = COLS.map((c) => {
+      let txt;
+      if (c.key === "confidence_label") txt = badgeHtml(r.confidence_label, r.badge_color);
+      else {
+        const raw = r[c.key];
+        txt = escapeHtml(String(c.fmt ? c.fmt(raw, r) : raw));
+      }
+      return `<td class="${c.cls || ""}">${txt}</td>`;
+    }).join("");
+    const sel = r.scan === selectedScan ? " class=\"sel\"" : "";
+    return `<tr data-scan="${escapeHtml(String(r.scan))}"${sel}>${cells}</tr>`;
+  }).join("");
+
+  $("tablewrap").innerHTML =
+    `<table><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="${COLS.length}" style="text-align:center;opacity:.6;padding:12px">no matching scans</td></tr>`}</tbody></table>`;
+}
+
+// ---- detail: score breakdown -----------------------------------------------------
+const PALETTE = {
+  success: "#16a34a",
+  warning: "#a16207",
+  danger: "#dc2626",
+};
+
+let _structSvgSeq = 0;
+function drawStructure(host, smiles, width = 140, height = 100) {
+  host.innerHTML = "";
+  if (!smiles || !window.SmiDrawer) {
+    host.innerHTML = '<div class="nostruct">no structure</div>';
+    return;
+  }
+  const svgId = `struct-svg-${_structSvgSeq++}`;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.id = svgId;
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  host.appendChild(svg);
+  const theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  try {
+    const drawer = new window.SmiDrawer({ width, height }, { width, height });
+    drawer.draw(smiles, `#${svgId}`, theme, () => {}, () => {
+      host.innerHTML = '<div class="nostruct">structure could<br>not be drawn</div>';
+    });
+  } catch (_) {
+    host.innerHTML = '<div class="nostruct">no structure</div>';
+  }
+}
+
+// ---- structure inspection modal ------------------------------------------------
+// Inline thumbnails are drawn small (52x40 / 140x100) to fit the layout — click one
+// to re-draw the same SMILES large in a modal for actual inspection.
+function openStructureModal(smiles, title, subtitle) {
+  if (!smiles) return;
+  $("struct-modal-title").textContent = title || "(unnamed compound)";
+  $("struct-modal-sub").textContent = subtitle || smiles;
+  $("struct-modal-overlay").classList.add("open");
+  drawStructure($("struct-modal-body"), smiles, 400, 320);
+}
+
+function closeStructureModal() {
+  $("struct-modal-overlay").classList.remove("open");
+  $("struct-modal-body").innerHTML = "";
+}
+
+$("struct-modal-close").addEventListener("click", closeStructureModal);
+$("struct-modal-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "struct-modal-overlay") closeStructureModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("struct-modal-overlay").classList.contains("open")) closeStructureModal();
+});
+
+// Makes `host` clickable to open `smiles` large in the modal, IF a structure was
+// actually drawn into it (no-op — and no pointer cursor — when there's nothing to
+// inspect). Call this right after drawStructure().
+function makeStructureClickable(host, smiles, title, subtitle) {
+  host.classList.remove("struct-clickable");
+  host.onclick = null;
+  if (!smiles || host.querySelector(".nostruct")) return;
+  host.classList.add("struct-clickable");
+  host.onclick = () => openStructureModal(smiles, title, subtitle);
+}
+
+function metricRow(name, weight, raw, contribution, note) {
+  const pct = Math.round(Math.max(0, Math.min(1, raw)) * 100);
+  return `<tr>
+    <td class="metric-name">${escapeHtml(name)}</td>
+    <td>${(weight * 100).toFixed(0)}%</td>
+    <td><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span class="bar-val">${raw.toFixed(2)}</span></div></td>
+    <td>${contribution.toFixed(1)} pts</td>
+    <td class="metric-note">${escapeHtml(note)}</td>
+  </tr>`;
+}
+
+// Recompute confidence_score using the real (filtered) query peak count instead
+// of the soft x/(x+K) fallback, mirroring bin/scorer.py's coverage_fraction path.
+// Returns a shallow copy of r with sharedPeaksScore/confidence_score/etc updated;
+// r itself (and the table's list score) is left untouched.
+function recomputeWithPeakCount(r, queryPeakCount) {
+  if (queryPeakCount == null || queryPeakCount <= 0) return r;
+  const w = DEFAULT_SCORE_WEIGHTS;
+  const sharedPeaksScore = Math.min(1.0, r.sharedPeaksRaw / queryPeakCount);
+  let score = 100.0 * (
+    w.structure_agreement * r.supportFraction +
+    w.tanimoto * r.tanimotoScore +
+    w.cosine_consistency * r.cosineConsistency +
+    w.max_cosine * r.maxCosine +
+    w.shared_peaks * sharedPeaksScore +
+    w.library_diversity * r.libraryDiversityScore
+  );
+  score = Math.min(100, Math.max(0, score)) * r.mzPrecision;
+  if (r.allUnknown) score = Math.min(score * UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP);
+  score = Math.min(100, Math.max(0, score));
+  const [label0, badge] = confidenceCategory(score);
+  const label = r.allUnknown ? "Structure unknown" : label0;
+  return {
+    ...r,
+    sharedPeaksScore, sharedPeaksSource: "coverage_fraction", queryPeakCount,
+    confidence_score: Math.round(score * 10) / 10,
+    confidence_label: label, badge_color: badge,
+  };
+}
+
+function renderBreakdown(r) {
+  const w = DEFAULT_SCORE_WEIGHTS;
+  const sharedNote = r.queryPeakCount
+    ? `${r.sharedPeaksRaw.toFixed(1)} of ${r.queryPeakCount} query peaks matched (real coverage, via /api/spectra)`
+    : `mean ${r.sharedPeaksRaw.toFixed(1)} matched peaks, soft-normalized (real peak count unavailable/loading)`;
+  const rows = [
+    metricRow("Structure agreement", w.structure_agreement, r.supportFraction,
+      100 * w.structure_agreement * r.supportFraction,
+      `${r.supportingMatches}/${r.total} hits share the winning structure key (Bayesian-shrunk)`),
+    metricRow("Tanimoto (approx.)", w.tanimoto, r.tanimotoScore,
+      100 * w.tanimoto * r.tanimotoScore, r.tanimotoSource),
+    metricRow("Cosine consistency", w.cosine_consistency, r.cosineConsistency,
+      100 * w.cosine_consistency * r.cosineConsistency, r.cosineConsistencySource),
+    metricRow("Max cosine", w.max_cosine, r.maxCosine,
+      100 * w.max_cosine * r.maxCosine, "best MQScore in the winning group"),
+    metricRow("Shared peaks", w.shared_peaks, r.sharedPeaksScore,
+      100 * w.shared_peaks * r.sharedPeaksScore, sharedNote),
+    metricRow("Library diversity", w.library_diversity, r.libraryDiversityScore,
+      100 * w.library_diversity * r.libraryDiversityScore, `${r.libraryDiversityCount} unique source librar${r.libraryDiversityCount === 1 ? "y" : "ies"}`),
+  ].join("");
+
+  return `<div id="detail-head">${escapeHtml(r.topCompound || "(unnamed compound)")}</div>` +
+    `<div id="detail-sub">scan ${escapeHtml(String(r.scan))} · ${r.total} total hit(s)</div>` +
+    `<div class="warn-box">Tanimoto here is an <strong>approximation</strong> (exact-string structure ` +
+    `matching, no RDKit) — see the plugin file header for why. Treat "Tanimoto (approx.)" as a stand-in ` +
+    `for structure consensus, not a real fingerprint similarity.</div>` +
+    (r.allUnknown ? `<div class="warn-box">All ${r.total} hit(s) lack both SMILES and InChIKey — ` +
+      `no structural evidence at all. Score demoted (×${UNKNOWN_STRUCTURE_PENALTY}, capped at ${UNKNOWN_STRUCTURE_CAP}).</div>` : "") +
+    `<div class="detail-top">
+       <div id="structure"><div class="nostruct">…</div></div>
+       <div class="gauge-wrap">
+         <div class="gauge-score" style="color:${PALETTE[r.badge_color] || "#666"}">${r.confidence_score.toFixed(1)}</div>
+         <div class="gauge-sublabel">annotation evidence score</div>
+         <div>${badgeHtml(r.confidence_label, r.badge_color)}</div>
+       </div>
+     </div>
+     <table class="breakdown">
+       <thead><tr><th>Metric</th><th>Weight</th><th>Raw</th><th>Contribution</th><th>Note</th></tr></thead>
+       <tbody>${rows}</tbody>
+     </table>`;
+}
+
+// ---- alternative possible structures -------------------------------------------
+// The structure groups this scan's hits fell into, minus the winner — i.e. the
+// competing candidate annotations that had less (or weaker) support.
+function renderAltStructures(r) {
+  if (!r.alternativeGroups.length) {
+    return `<div class="section-h">Alternative possible structures</div>
+      <div class="empty-note">Every hit in this scan agrees on one structure key — no competing candidates.</div>`;
+  }
+  const items = r.alternativeGroups.map((g, i) => {
+    const rep = g.representative;
+    const name = rep._compound || "(unnamed compound)";
+    const ikNote = rep._inchikeyBlock ? `InChIKey ${escapeHtml(rep._inchikeyBlock)}` : "no InChIKey";
+    return `<div class="alt-card">
+      <div class="struct-mini" id="alt-struct-${i}"><div class="nostruct">…</div></div>
+      <div>
+        <div class="alt-name">${escapeHtml(name)}</div>
+        <div class="alt-meta">${ikNote}</div>
+      </div>
+      <div class="alt-stat">${g.count}/${r.total} hits<br>max cosine ${g.maxCosine.toFixed(3)}</div>
+    </div>`;
+  }).join("");
+  return `<div class="section-h">Alternative possible structures (${r.alternativeGroups.length})</div>
+    <div class="alt-list">${items}</div>`;
+}
+
+function drawAltStructures(r) {
+  r.alternativeGroups.forEach((g, i) => {
+    const host = document.getElementById(`alt-struct-${i}`);
+    if (!host) return;
+    const smiles = g.representative._smiles;
+    const name = g.representative._compound || "(unnamed compound)";
+    drawStructure(host, smiles, 52, 40);
+    makeStructureClickable(host, smiles, name, `scan ${r.scan} · alternative structure · ${smiles || ""}`);
+  });
+}
+
+// ---- biological context (MASST/REDU), lazy-loaded per structure group ----------
+function renderMasstSkeleton(r) {
+  const groups = [{ label: r.topCompound || "(unnamed)", block: r.representative._inchikeyBlock, idx: "winner" },
+    ...r.alternativeGroups.map((g, i) => ({ label: g.representative._compound || "(unnamed)", block: g.representative._inchikeyBlock, idx: `alt${i}` }))]
+    .filter((g) => g.block);
+
+  if (!groups.length) {
+    return `<div class="section-h">Biological context (MASST/REDU)</div>
+      <div class="empty-note">No InChIKey available for this scan's candidate structures — MASST context needs one.</div>`;
+  }
+  const items = groups.map((g) => `
+    <details class="masst-group" data-block="${escapeHtml(g.block)}">
+      <summary>${escapeHtml(g.label)} <span style="opacity:.55;font-weight:400">(${escapeHtml(g.block)})</span></summary>
+      <div class="masst-body"><div class="masst-loading">Not loaded — expand to fetch from masst-records.gnps2.org…</div></div>
+    </details>`).join("");
+  return `<div class="section-h">Biological context (MASST/REDU)</div>${items}`;
+}
+
+function wireMasstAccordions(scan) {
+  document.querySelectorAll("#detail .masst-group").forEach((el) => {
+    el.addEventListener("toggle", async function onToggle() {
+      if (!this.open || this.dataset.loaded) return;
+      this.dataset.loaded = "1";
+      if (selectedScan !== scan) return;
+      const block = this.dataset.block;
+      const body = this.querySelector(".masst-body");
+      body.innerHTML = '<div class="masst-loading">Loading MASST/REDU context…</div>';
+      const result = await fetchMasstContext([block]);
+      if (selectedScan !== scan) return;
+      if (result.blocked) {
+        body.innerHTML = '<div class="masst-blocked">Blocked by this build\'s plugin CSP — ' +
+          'masst-records.gnps2.org is not allow-listed here. Ask the app maintainers to allow-list it ' +
+          'to enable biological context.</div>';
+        return;
+      }
+      if (!result.rows.length) {
+        body.innerHTML = '<div class="empty-note">No MASST/REDU biological context found for this structure.</div>';
+        return;
+      }
+      const totalSamples = result.rows.reduce((a, row) => a + (Number(row.num_samples) || 0), 0);
+      const totalSpectra = result.rows.reduce((a, row) => a + (Number(row.total_spectra) || 0), 0);
+      const bySample = new Map();
+      for (const row of result.rows) {
+        const k = row.SampleType || "(unknown)";
+        bySample.set(k, (bySample.get(k) || 0) + (Number(row.num_samples) || 0));
+      }
+      const top = [...bySample.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).reverse();
+      body.innerHTML =
+        `<div class="empty-note" style="margin-bottom:6px">Found in ${totalSamples.toLocaleString()} REDU samples across ${totalSpectra.toLocaleString()} spectra.</div>` +
+        `<div class="masst-plot" id="masst-plot-${block}"></div>`;
+      if (window.Plotly) {
+        window.Plotly.newPlot(`masst-plot-${block}`, [{
+          x: top.map((t) => t[1]), y: top.map((t) => t[0]), type: "bar", orientation: "h",
+          marker: { color: "#0891b2" },
+          hovertemplate: "%{y}: %{x:,} samples<extra></extra>",
+        }], {
+          margin: { l: 140, r: 10, t: 10, b: 30 },
+          xaxis: { title: "samples" },
+          paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+          font: { size: 10 },
+        }, { displaylogo: false, responsive: true });
+      }
+    });
+  });
+}
+
+async function selectScan(scan) {
+  const r = SCANS.find((s) => String(s.scan) === String(scan));
+  if (!r) return;
+  selectedScan = r.scan;
+  document.querySelectorAll("tr.sel").forEach((t) => t.classList.remove("sel"));
+  const tr = document.querySelector(`tr[data-scan="${CSS.escape(String(r.scan))}"]`);
+  if (tr) tr.classList.add("sel");
+
+  $("detail").innerHTML = renderBreakdown(r) + renderAltStructures(r) + renderMasstSkeleton(r);
+
+  const smilesCol = COLMAP && COLMAP.smiles;
+  const drawMainStructure = (row) => {
+    const smiles = smilesCol ? row.representative[smilesCol] : null;
+    drawStructure($("structure"), smiles);
+    makeStructureClickable($("structure"), smiles, row.topCompound, `scan ${row.scan} · winning structure · ${smiles || ""}`);
+  };
+  drawMainStructure(r);
+  drawAltStructures(r);
+  wireMasstAccordions(r.scan);
+
+  // Refine shared_peaks (and the overall score) with the real query peak count.
+  const queryPeakCount = await fetchQueryPeakCount(r.scan);
+  if (selectedScan !== r.scan) return; // a later click has moved on
+  if (queryPeakCount != null) {
+    const refined = recomputeWithPeakCount(r, queryPeakCount);
+    $("detail").innerHTML = renderBreakdown(refined) + renderAltStructures(refined) + renderMasstSkeleton(refined);
+    drawMainStructure(refined);
+    drawAltStructures(refined);
+    wireMasstAccordions(refined.scan);
+  }
+}
+
+// ---- wiring -----------------------------------------------------------------
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+$("search").addEventListener("input", (e) => { filter = e.target.value; renderTable(); });
+$("label-filter").addEventListener("change", (e) => { labelFilter = e.target.value; renderTable(); });
+
+$("tablewrap").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-key]");
+  if (th) {
+    const key = th.dataset.key;
+    sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: key === "topCompound" || key === "confidence_label" ? 1 : -1 };
+    renderTable();
+    return;
+  }
+  const tr = e.target.closest("tr[data-scan]");
+  if (!tr) return;
+  selectScan(tr.dataset.scan);
+});
+
+boot();
+</script>
