@@ -407,6 +407,7 @@ def _compute_scan_level_confidence(
                 "support_group_key": support_group_key,
                 "supporting_matches": int(best["count"]),
                 "total_matches": int(total_matches),
+                "support_fraction": round(float(support_fraction), 4),
                 "missing_structures": missing_structures,
                 "all_structures_unknown": all_structures_unknown,
                 "mean_cosine": round(mean_cosine, 4),

@@ -402,7 +402,7 @@ def _build_reliability_breakdown_panel(
     normalized_score_weights = _normalize_score_weights(score_weights)
     supporting_matches = int(score_row["supporting_matches"])
     total_matches = int(score_row["total_matches"])
-    support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+    support_fraction = float(score_row["support_fraction"])
     similarity_value = float(score_row["cosine_consistency"])
     cosine_consistency_src = _to_text(score_row["cosine_consistency_source"])
     tanimoto_score = float(score_row["tanimoto_score"])
@@ -1657,9 +1657,7 @@ def _build_detail_panel(
                 applied_overrides += 1
 
         if applied_overrides > 0:
-            supporting_matches = int(score_row_for_panel["supporting_matches"])
-            total_matches = int(score_row_for_panel["total_matches"])
-            support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+            support_fraction = float(score_row_for_panel["support_fraction"])
 
             tanimoto_score, tanimoto_source = scan_tanimoto(adjusted_scan_df["_smiles"].tolist(), support_fraction)
             if tanimoto_source == "tanimoto_ecfp4":
