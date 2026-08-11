@@ -20,7 +20,7 @@ from components import (
     _search_pubchem_candidates,
 )
 from bin.normalizer import _infer_resolved_workflow, _truncate_text
-from bin.constants import SUPPORTED_WORKFLOWS, PPM_SIGMA, PPM_FLOOR
+from bin.constants import SUPPORTED_WORKFLOWS, PPM_SIGMA, PPM_FLOOR, APP_VERSION
 import io
 
 import pandas as pd
@@ -1018,6 +1018,12 @@ NAVBAR = dbc.Navbar(
         dbc.NavbarBrand(
             "GNPS2-AnnEx: Annotation Evidence Explorer",
             href="/",
+        ),
+        dbc.Badge(
+            f"v{APP_VERSION}",
+            color="secondary",
+            className="ms-2 align-self-center",
+            pill=True,
         ),
     ],
     color="light",
