@@ -33,6 +33,7 @@ from bin.scorer import (
     _confidence_category,
     _normalize_score_weights,
 )
+from bin.constants import UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP
 from bin.tanimoto import _smiles_to_morgan_fp, scan_tanimoto
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,12 @@ def _confidence_palette(confidence_label):
             "badge_border": "#efb0a5",
             "tone": "Metrics disagree — check evidence details",
         },
+        "Structure unknown": {
+            "color": "#b45309",
+            "badge_background": "#fbe9d0",
+            "badge_border": "#e6b877",
+            "tone": "No structure to annotate — score capped",
+        },
     }
     return palette_map.get(
         confidence_label,
@@ -390,11 +397,12 @@ def _build_reliability_breakdown_panel(
 ):
     confidence_score = float(score_row["confidence_score"])
     confidence_label = _to_text(score_row["confidence_label"])
+    all_structures_unknown = bool(score_row.get("all_structures_unknown", False))
     palette = _confidence_palette(confidence_label)
     normalized_score_weights = _normalize_score_weights(score_weights)
     supporting_matches = int(score_row["supporting_matches"])
     total_matches = int(score_row["total_matches"])
-    support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+    support_fraction = float(score_row["support_fraction"])
     similarity_value = float(score_row["cosine_consistency"])
     cosine_consistency_src = _to_text(score_row["cosine_consistency_source"])
     tanimoto_score = float(score_row["tanimoto_score"])
@@ -574,6 +582,39 @@ def _build_reliability_breakdown_panel(
         )
     )
 
+    unknown_structure_notice = None
+    if all_structures_unknown:
+        _cap_txt = f"capped at {UNKNOWN_STRUCTURE_CAP:.0f}"
+        _penalty_txt = (
+            f"halved (×{UNKNOWN_STRUCTURE_PENALTY:g}) and {_cap_txt}"
+            if UNKNOWN_STRUCTURE_PENALTY != 1.0
+            else _cap_txt
+        )
+        unknown_structure_notice = html.Div(
+            [
+                html.Span("⚠", className="unknown-structure-icon"),
+                html.Div(
+                    [
+                        html.Strong("No structure to annotate"),
+                        html.Span(
+                            f"All {total_matches} library hit(s) for this scan lack a SMILES and an "
+                            f"InChIKey, so there is no structural evidence to corroborate an "
+                            f"annotation. The confidence score is {_penalty_txt}, and structure "
+                            f"agreement and Tanimoto below reflect hit counts only — not real "
+                            f"structural consensus.",
+                        ),
+                    ],
+                    className="unknown-structure-text",
+                ),
+            ],
+            className="unknown-structure-notice",
+            style={
+                "color": palette["color"],
+                "background": palette["badge_background"],
+                "borderColor": palette["badge_border"],
+            },
+        )
+
     return html.Div(
         [
             html.Div(
@@ -589,6 +630,7 @@ def _build_reliability_breakdown_panel(
                 ],
                 className="query-bar",
             ),
+            unknown_structure_notice,
             html.Div(
                 [
                     html.Div(
@@ -1615,9 +1657,7 @@ def _build_detail_panel(
                 applied_overrides += 1
 
         if applied_overrides > 0:
-            supporting_matches = int(score_row_for_panel["supporting_matches"])
-            total_matches = int(score_row_for_panel["total_matches"])
-            support_fraction = (supporting_matches / total_matches) if total_matches else 0.0
+            support_fraction = float(score_row_for_panel["support_fraction"])
 
             tanimoto_score, tanimoto_source = scan_tanimoto(adjusted_scan_df["_smiles"].tolist(), support_fraction)
             if tanimoto_source == "tanimoto_ecfp4":

@@ -9,6 +9,7 @@ from .constants import (
     ENTROPY_USI_TIMEOUT_SEC, K_SHARED_PEAKS, K_LIBRARY_DIVERSITY,
     PPM_SIGMA, PPM_FLOOR, PPM_TOLERANCE, PPM_GATE_MODE,
     SUPPORT_ALPHA, SUPPORT_BETA,
+    UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP,
 )
 from .normalizer import (
     _annotate_support_groups,
@@ -372,7 +373,23 @@ def _compute_scan_level_confidence(
             score_weights=normalized_score_weights,
         )
         confidence_score = min(100.0, max(0.0, confidence_score * mz_precision))
-        confidence_label, badge_color = _confidence_category(confidence_score)
+
+        # All-unknown-structure penalty: every hit lacks both SMILES and InChIKey,
+        # so there is no structural evidence to support an annotation. Demote the
+        # score regardless of spectral quality (see constants for the knobs).
+        all_structures_unknown = missing_structures >= total_matches
+        if all_structures_unknown:
+            confidence_score = min(
+                confidence_score * UNKNOWN_STRUCTURE_PENALTY,
+                UNKNOWN_STRUCTURE_CAP,
+            )
+
+        confidence_score = min(100.0, max(0.0, confidence_score))
+        if all_structures_unknown:
+            _, badge_color = _confidence_category(confidence_score)
+            confidence_label = "Structure unknown"
+        else:
+            confidence_label, badge_color = _confidence_category(confidence_score)
 
         precursor_mz = None
         if precursor_mz_col is not None:
@@ -390,7 +407,9 @@ def _compute_scan_level_confidence(
                 "support_group_key": support_group_key,
                 "supporting_matches": int(best["count"]),
                 "total_matches": int(total_matches),
+                "support_fraction": round(float(support_fraction), 4),
                 "missing_structures": missing_structures,
+                "all_structures_unknown": all_structures_unknown,
                 "mean_cosine": round(mean_cosine, 4),
                 "max_cosine": round(max_cosine, 4),
                 "cosine_consistency": round(float(cosine_consistency), 4),
