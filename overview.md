@@ -1,8 +1,8 @@
-# TopKonfidence Overview (Simple)
+# GNPS2-AnnEx Overview (Simple)
 
 ## What this app does
 
-TopKonfidence helps you review GNPS2 library annotations and gives each spectrum a **confidence score**.  
+GNPS2-AnnEx helps you review GNPS2 library annotations and gives each spectrum a **confidence score**.  
 It is designed to answer one main question:  
 **“How trustworthy is this annotation?”**
 

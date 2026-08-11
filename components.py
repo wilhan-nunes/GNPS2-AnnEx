@@ -81,7 +81,7 @@ def _search_pubchem_candidates(inchikey: str, name: str, max_results: int = 8) -
 
     def _fetch_json(url: str) -> dict:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "TopKonfidence/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "GNPS2-AnnEx/1.0"})
             with urllib.request.urlopen(req, timeout=6) as resp:
                 return json.loads(resp.read())
         except Exception:
@@ -797,7 +797,7 @@ LIMIT 100
 
     url = MASST_API_URL + urllib.parse.quote(sql)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TopKonfidence/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "GNPS2-AnnEx/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
         if not isinstance(data, dict) or not data.get("ok") or not data.get("rows"):

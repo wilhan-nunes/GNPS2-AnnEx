@@ -1,4 +1,4 @@
-## TopKonfidence Dashboard
+## GNPS2-AnnEx Dashboard
 
 This workspace now includes:
 

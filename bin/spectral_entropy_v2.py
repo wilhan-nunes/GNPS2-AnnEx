@@ -73,8 +73,8 @@ DEFAULT_CACHE_TTL_SEC     = 24 * 60 * 60  # 1 day
 
 CACHE_DIR = Path(
     os.environ.get(
-        "TOPKONFIDENCE_CACHE_DIR",
-        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "topkonfidence" / "spectral_entropy_v2",
+        "GNPS2_ANNEX_CACHE_DIR",
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "gnps2-annex" / "spectral_entropy_v2",
     )
 )
 

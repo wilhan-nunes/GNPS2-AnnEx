@@ -22,7 +22,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 MGF_CACHE_DIR = Path(
-    os.environ.get("TOPKONFIDENCE_MGF_CACHE_DIR", "temp/mgf_cache")
+    os.environ.get("GNPS2_ANNEX_MGF_CACHE_DIR", "temp/mgf_cache")
 )
 
 

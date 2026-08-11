@@ -3,6 +3,7 @@ logs/
 temp/
 .venv/
 __pycache__/
+scratch/
 
 # Test/scratch data
 small_exert.csv
