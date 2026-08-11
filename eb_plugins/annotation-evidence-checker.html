@@ -2,10 +2,10 @@
 <!--
   Annotation Evidence Checker — a Feature Finder plugin.
 
-  Ports TopKonfidence's (bin/scorer.py) per-scan confidence score into the
+  Ports GNPS2-AnnEx's (bin/scorer.py) per-scan confidence score into the
   Feature Finder app as a client-side view over its own exact library-search
   results, so a user gets the same "how much should I trust this annotation"
-  signal without leaving the app or standing up TopKonfidence separately.
+  signal without leaving the app or standing up GNPS2-AnnEx separately.
 
   Reads ONE result file (absent until a library search has run -> 404 is
   normal "no hits yet"):
@@ -51,7 +51,7 @@
   get_filtered_query_peak_count_from_mgf does (noise threshold + max-peak cap,
   see ENTROPY_NOISE_THRESHOLD/ENTROPY_MAX_PEAK_NUM), and re-renders the detail
   panel with the refined score. The list score and the just-opened detail score
-  can therefore differ slightly — same as TopKonfidence's own dashboard, where
+  can therefore differ slightly — same as GNPS2-AnnEx's own dashboard, where
   the detail panel re-fetches and re-scores the single selected scan.
 
   Two more panels beyond the score breakdown, both scoped to the selected scan:
@@ -81,7 +81,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="ff-plugin-name" content="Annotation Evidence Checker">
-<meta name="ff-plugin-description" content="Per-scan confidence score for exact library annotations, ported from TopKonfidence's scoring model.">
+<meta name="ff-plugin-description" content="Per-scan confidence score for exact library annotations, ported from GNPS2-AnnEx's scoring model.">
 <meta name="ff-plugin-version" content="1">
 <title>Annotation Evidence Checker</title>
 <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>

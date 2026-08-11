@@ -115,6 +115,7 @@ def _normalize_library_matches_dataframe(df):
         if matched_column is not None:
             work_df = work_df.rename(columns={matched_column: canonical_name})
 
+    work_df = _derive_library_usi_from_spectrum_id(work_df)
     work_df = _harmonize_metadata(work_df)
     work_df = _derive_smiles_from_inchi(work_df)
     work_df = _propagate_structure_by_name(work_df)
@@ -124,6 +125,18 @@ def _normalize_library_matches_dataframe(df):
     if _ENABLE_PUBCHEM_STRUCTURE_FALLBACK:
         work_df = _pubchem_structure_fallback(work_df)
     return work_df
+
+
+def _derive_library_usi_from_spectrum_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Some GNPS2 result files omit the `library_usi` column entirely (e.g. when
+    the merge-with-GNPS-library-metadata step drops it). It is always derivable
+    from a CCMSLIB SpectrumID, so fall back to that instead of leaving mirror
+    plot links unavailable."""
+    if "library_usi" in df.columns or "SpectrumID" not in df.columns:
+        return df
+    df = df.copy()
+    df["library_usi"] = df["SpectrumID"].map(_normalize_library_usi)
+    return df
 
 
 def _derive_smiles_from_inchi(df: pd.DataFrame) -> pd.DataFrame:
