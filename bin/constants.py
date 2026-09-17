@@ -7,6 +7,15 @@ SUPPORTED_WORKFLOWS = {"auto", "classic", "fbmn", "librarysearch"}
 ENTROPY_USI_TIMEOUT_SEC = int(os.environ.get("ENTROPY_USI_TIMEOUT_SEC", 8))
 LIBRARY_RESULTS_CACHE_TIMEOUT_SEC = 86400
 
+# Per-loader wall-clock budget when fetching library matches (bin/loader.py).
+# "auto" mode tries up to 5 loaders in sequence; some (gnpsdata workflow
+# helpers, taskresult fallbacks) issue their own HTTP requests without an
+# exposed timeout. Without a wall-clock cap here, a single unresponsive
+# loader can keep the whole chain running past the gunicorn worker timeout
+# (run_server.sh, --timeout 120), so the request gets killed before the
+# except-block alert in dash_interface2.py ever renders.
+LIBRARY_LOADER_TIMEOUT_SEC = int(os.environ.get("LIBRARY_LOADER_TIMEOUT_SEC", 20))
+
 # SharedPeaks normalisation: x / (x + K) maps raw peak counts to [0, 1].
 K_SHARED_PEAKS = 5
 

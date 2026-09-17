@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
 
 import pandas as pd
@@ -12,10 +13,26 @@ from gnpsdata import workflow_classicnetworking
 from gnpsdata import workflow_fbmn
 
 from app import cache
-from .constants import LIBRARY_RESULTS_CACHE_TIMEOUT_SEC
+from .constants import LIBRARY_LOADER_TIMEOUT_SEC, LIBRARY_RESULTS_CACHE_TIMEOUT_SEC
 from .normalizer import _normalize_library_matches_dataframe
 
 logger = logging.getLogger(__name__)
+
+# Loaders (gnpsdata helpers, taskresult fallbacks) may issue their own HTTP
+# requests without an exposed timeout, so each call is bounded by running it
+# in a worker thread and capping how long we wait on its result. A timed-out
+# call is abandoned rather than killed, since Python has no safe way to
+# interrupt a running thread; the thread keeps running in the background
+# until its underlying request eventually completes or errors.
+_loader_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="library-loader")
+
+
+def _run_with_timeout(func, task_id, timeout_sec):
+    future = _loader_executor.submit(func, task_id)
+    try:
+        return future.result(timeout=timeout_sec)
+    except FutureTimeoutError:
+        raise TimeoutError(f"timed out after {timeout_sec}s")
 
 
 @lru_cache(maxsize=128)
@@ -23,7 +40,7 @@ def _get_direct_resultview_dataframe(task_id, view_name):
     response = requests.get(
         "https://gnps2.org/result",
         params={"task": task_id, "viewname": view_name, "json": ""},
-        timeout=60,
+        timeout=LIBRARY_LOADER_TIMEOUT_SEC,
     )
     response.raise_for_status()
 
@@ -112,7 +129,8 @@ def _load_library_matches_cached(task_id, workflow_choice):
     errors = []
     for loader_name, loader in loaders:
         try:
-            df = _normalize_library_matches_dataframe(loader(task_id))
+            raw_df = _run_with_timeout(loader, task_id, LIBRARY_LOADER_TIMEOUT_SEC)
+            df = _normalize_library_matches_dataframe(raw_df)
             if df is not None and len(df) > 0:
                 return df
         except Exception as exc:
