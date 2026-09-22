@@ -1,0 +1,2353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GNPS2-AnnEx</title>
+<meta name="description" content="GNPS2 library annotation confidence scoring — everything runs in your browser, your data never leaves your machine.">
+<style>
+  :root {
+    --bg: #fafafa;
+    --card: #fff;
+    --ink: #222;
+    --muted: #6c6c70;
+    --line: #e3e6ea;
+    --accent: #2980b9;
+    --accent-bg: #eef3fc;
+    --ok: #0a7c00;
+    --err: #b00020;
+    --warn: #8a5a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .num { font-variant-numeric: tabular-nums; }
+  a.back { color: var(--accent); text-decoration: none; font-size: 14px; }
+  a.back:hover { text-decoration: underline; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 48px 24px; }
+  h1 { margin: 12px 0 4px; font-size: 26px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; max-width: 720px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  input[type=text], select {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    min-width: 260px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  select { min-width: 160px; font-family: inherit; }
+  button {
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    border-radius: 6px;
+    padding: 9px 16px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: #fff;
+    color: var(--accent);
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #status {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: none;
+  }
+  #status.info { display: block; background: var(--accent-bg); color: var(--accent); }
+  #status.ok   { display: block; background: #eafbe7; color: var(--ok); }
+  #status.warn { display: block; background: #fff6e5; color: var(--warn); }
+  #status.err  { display: block; background: #fdeaec; color: var(--err); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  #results-table td.compound-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  th { cursor: pointer; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--card); }
+  tbody tr:hover { background: var(--accent-bg); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .badge.success { background: #eafbe7; color: var(--ok); }
+  .badge.warning { background: #fff6e5; color: var(--warn); }
+  .badge.danger  { background: #fdeaec; color: var(--err); }
+  #results-wrap { overflow-x: auto; max-height: 70vh; overflow-y: auto; display: none; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+  tbody tr.clickable { cursor: pointer; }
+
+  /* ── Detail panel (ported from assets/msms_detail_view.css) ── */
+  .msms-detail {
+    --green: var(--ok); --green-dim: #dff4ea;
+    --amber: var(--warn); --amber-dim: #fff1d6;
+    --red: var(--err); --red-dim: #fde2de;
+    --border: var(--line); --border2: var(--line);
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: none;
+  }
+  .msms-detail .detail-back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; margin-bottom: 14px; cursor: pointer; }
+  .msms-detail .detail-back-link:hover { text-decoration: underline; }
+  .msms-detail .query-bar { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; margin-bottom: 1rem; background: #fff; }
+  .msms-detail .query-field { flex: 1 1 150px; min-width: 140px; padding: 10px 16px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
+  .msms-detail .query-field:last-child { border-right: none; }
+  .msms-detail .query-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+  .msms-detail .query-val { color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .msms-detail .unknown-structure-notice { display: flex; gap: 10px; padding: 12px 16px; margin-bottom: 1rem; border: 1px solid var(--amber); background: var(--amber-dim); border-radius: 10px; font-size: 12px; }
+  .msms-detail .score-layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
+  .msms-detail .gauge-card, .msms-detail .table-card { background: #fff; border: 1px solid var(--border2); border-radius: 10px; }
+  .msms-detail .gauge-card { padding: 22px 18px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .msms-detail .gauge-svg { width: 140px; height: 110px; }
+  .msms-detail .gauge-score { font-family: var(--mono); font-size: 34px; font-weight: 700; line-height: 1; }
+  .msms-detail .gauge-sublabel { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; text-align: center; }
+  .msms-detail .gauge-badge { padding: 4px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid; }
+  .msms-detail .gauge-reliability { font-size: 13px; font-weight: 600; }
+  .msms-detail .gauge-divider { width: 100%; height: 1px; background: var(--border); }
+  .msms-detail .compound-name { font-size: 12px; color: var(--muted); text-align: center; font-style: italic; line-height: 1.4; word-break: break-word; }
+  .msms-detail .table-card { overflow-x: auto; }
+  .msms-detail .table-card table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .msms-detail .table-card thead th { padding: 10px 12px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; }
+  .msms-detail .table-card thead th:not(:first-child) { text-align: right; }
+  .msms-detail .table-card thead th:nth-child(4) { text-align: left; }
+  .msms-detail .table-card td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .msms-detail .table-card td:not(:first-child):not(:nth-child(4)) { text-align: right; }
+  .msms-detail .td-component strong { display: block; font-size: 12px; font-weight: 600; }
+  .msms-detail .td-component span { display: block; font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .msms-detail .td-weight { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .msms-detail .bar-cell { display: flex; align-items: center; gap: 8px; }
+  .msms-detail .bar-bg { flex: 1; min-width: 80px; height: 5px; border-radius: 999px; background: #dde5ee; overflow: hidden; }
+  .msms-detail .bar-fill { height: 100%; border-radius: 999px; }
+  .msms-detail .bar-val { min-width: 38px; font-family: var(--mono); font-size: 11px; font-weight: 600; text-align: right; }
+  .msms-detail .td-raw-primary, .msms-detail .td-raw-secondary { display: block; }
+  .msms-detail .td-raw-primary { font-size: 11px; }
+  .msms-detail .td-raw-secondary { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .msms-detail .td-contrib { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+  .msms-detail .total-row td { border-top: 1px solid var(--border2); padding-top: 12px; padding-bottom: 12px; }
+  .msms-detail .total-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .msms-detail .total-score { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+  .msms-detail .legend { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 1rem; font-size: 11px; color: var(--muted); }
+  .msms-detail .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  @media (max-width: 780px) { .msms-detail .score-layout { grid-template-columns: 1fr; } }
+
+  .msms-detail .groups-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin-top: 14px; }
+  .msms-detail .group-card { background: #fff; border: 1px solid var(--border2); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .msms-detail .group-mol { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .msms-detail .group-mol svg { max-width: 100%; max-height: 100%; }
+  .msms-detail .group-mol-placeholder { font-size: 11px; color: var(--muted); text-align: center; }
+  .msms-detail .group-title { font-size: 12px; font-weight: 700; line-height: 1.3; }
+  .msms-detail .group-meta { font-size: 11px; color: var(--muted); }
+  .msms-detail .group-links { font-size: 11px; display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+  .msms-detail .group-links a { color: var(--accent); text-decoration: none; }
+  .msms-detail .group-links a:hover { text-decoration: underline; }
+  .group-card.clickable { cursor: pointer; transition: box-shadow 0.1s, border-color 0.1s; }
+  .group-card.clickable:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgba(41,128,185,0.12); }
+
+  /* ── Structure modal ── */
+  #structure-modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(20,24,30,0.55);
+    z-index: 1000; align-items: center; justify-content: center; padding: 20px;
+  }
+  #structure-modal-overlay.open { display: flex; }
+  #structure-modal {
+    background: #fff; border-radius: 12px; max-width: 640px; width: 100%;
+    max-height: 88vh; overflow-y: auto; padding: 22px 24px; position: relative;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  }
+  #structure-modal .modal-close {
+    position: absolute; top: 14px; right: 16px; border: none; background: none;
+    font-size: 22px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px 8px;
+  }
+  #structure-modal .modal-close:hover { color: var(--ink); }
+  #structure-modal h2 { margin: 0 0 4px; font-size: 17px; padding-right: 30px; }
+  #structure-modal .modal-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  #structure-modal .badge.secondary { background: #eef1f4; color: var(--muted); }
+  #structure-modal .badge.info-tone { background: var(--accent-bg); color: var(--accent); }
+  #structure-modal .modal-mol { width: 100%; height: 220px; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+  #structure-modal .modal-mol svg { max-width: 100%; max-height: 100%; }
+  #structure-modal .modal-field { margin-bottom: 12px; }
+  #structure-modal .modal-field-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 3px; }
+  #structure-modal .modal-field-value { font-size: 13px; line-height: 1.5; word-break: break-word; }
+  #structure-modal .modal-field-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  #structure-modal .modal-links { display: flex; flex-direction: column; gap: 4px; }
+  #structure-modal .modal-links a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  #structure-modal .modal-links a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">&larr; All apps</a>
+  <h1>GNPS2-AnnEx</h1>
+  <p class="sub">GNPS2 library annotation confidence dashboard. Enter a GNPS2 task ID (FBMN, Classical Networking, or Library Search) — matches are fetched over CORS and every confidence score is computed here in your browser. Your data never leaves your machine.</p>
+
+  <div class="card">
+    <h2>Load a task</h2>
+    <div class="row">
+      <div class="field">
+        <label for="task-id">GNPS2 task ID</label>
+        <input type="text" id="task-id" placeholder="e.g. b22ff1bc41624e29a28cf6e12fe17ad5">
+      </div>
+      <div class="field">
+        <label for="workflow">Workflow</label>
+        <select id="workflow">
+          <option value="auto">Auto-detect</option>
+          <option value="fbmn">FBMN</option>
+          <option value="classic">Classical Networking</option>
+          <option value="librarysearch">Library Search</option>
+        </select>
+      </div>
+      <button id="load-btn">Load &amp; score</button>
+      <button id="example-btn" class="secondary" type="button">Try an example</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="results-card" style="display:none;">
+    <h2>Scored scans</h2>
+    <p class="sub" style="margin:-6px 0 14px;">Click a row for the full metric breakdown. <button id="download-btn" class="secondary" type="button" style="margin-left:8px;">Download CSV</button></p>
+    <div id="results-wrap">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th data-key="scan">Scan</th>
+            <th data-key="retention_time">RT (min)</th>
+            <th data-key="precursor_mz">Precursor m/z</th>
+            <th data-key="top_compound">Top compound</th>
+            <th data-key="confidence_score">Score</th>
+            <th data-key="confidence_label">Label</th>
+            <th data-key="supporting_matches">Support</th>
+            <th data-key="total_matches">Total</th>
+            <th data-key="max_cosine">Max cosine</th>
+            <th data-key="tanimoto_score">Tanimoto</th>
+            <th data-key="query_entropy">Entropy</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card msms-detail" id="detail-card">
+    <a class="detail-back-link" id="detail-back">&larr; Back to scored scans</a>
+
+    <div class="query-bar">
+      <div class="query-field"><span class="query-label">Scan</span><span class="query-val" id="d-scan">—</span></div>
+      <div class="query-field"><span class="query-label">RT (min)</span><span class="query-val" id="d-rt">—</span></div>
+      <div class="query-field"><span class="query-label">Precursor m/z</span><span class="query-val" id="d-mz">—</span></div>
+      <div class="query-field"><span class="query-label">Structure support</span><span class="query-val" id="d-support">—</span></div>
+      <div class="query-field"><span class="query-label">Query entropy</span><span class="query-val" id="d-entropy">—</span></div>
+    </div>
+
+    <div class="unknown-structure-notice" id="d-unknown-notice" style="display:none;">
+      No SMILES or InChIKey on any hit in this scan &mdash; the score below is demoted (&times;<span id="d-penalty"></span>, capped at <span id="d-cap"></span>) because there is no structural evidence at all.
+    </div>
+
+    <div class="score-layout">
+      <div class="gauge-card">
+        <svg class="gauge-svg" viewBox="0 0 140 110" id="gauge-svg"></svg>
+        <div class="gauge-score" id="gauge-score">—</div>
+        <div class="gauge-sublabel">composite confidence score</div>
+        <div class="gauge-badge" id="gauge-badge">—</div>
+        <div class="gauge-divider"></div>
+        <div class="compound-name" id="compound-name">—</div>
+        <div class="compound-name" id="structure-key">—</div>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:34%">Component</th>
+              <th style="width:8%">Weight</th>
+              <th style="width:28%">Normalised value</th>
+              <th style="width:18%">Raw</th>
+              <th style="width:12%">Contribution</th>
+            </tr>
+          </thead>
+          <tbody id="detail-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <h2 style="margin-top:20px;">Candidate structures in this scan</h2>
+    <div class="groups-grid" id="groups-grid"></div>
+
+    <div class="legend" style="margin-top:20px;">
+      <span><span class="legend-dot" style="background:var(--ok)"></span>Consistent evidence: score &ge; 80</span>
+      <span><span class="legend-dot" style="background:var(--warn)"></span>Inconclusive: 55&ndash;79.9</span>
+      <span><span class="legend-dot" style="background:var(--err)"></span>Inconsistent evidence: &lt; 55</span>
+    </div>
+  </div>
+
+  <footer>All computation runs client-side via RDKit.js (loaded from a CDN — cheminformatics of this depth has no pure-JS equivalent) and plain JavaScript. GNPS2 requests go directly from your browser to gnps2.org over CORS.
+  <br>One exception: library rows whose only structure field is INCHI (no SMILES) are resolved via a best-effort, exact-match lookup to PubChem (structure identifier only, never your spectra/task data) before scoring, since no browser-side toolkit here can parse InChI — see the code comment near <code>deriveSmilesFromInchi</code>.
+  <br>Known difference from the Python app: on rare positional-isomer group ties (~1% of scans in testing), this port and the Python scorer can pick different, equally-valid tied groups — see the code comment near <code>exactToPositional</code> for details.</footer>
+</div>
+
+<div id="structure-modal-overlay">
+  <div id="structure-modal">
+    <button class="modal-close" id="structure-modal-close" aria-label="Close" type="button">&times;</button>
+    <h2 id="modal-compound-name">—</h2>
+    <div class="modal-badges" id="modal-badges"></div>
+    <div class="modal-mol" id="modal-mol"></div>
+    <div class="modal-field">
+      <div class="modal-field-label">Best cosine</div>
+      <div class="modal-field-value mono" id="modal-best-cosine">—</div>
+    </div>
+    <div class="modal-field">
+      <div class="modal-field-label">InChIKey</div>
+      <div class="modal-field-value mono" id="modal-inchikey">—</div>
+    </div>
+    <div class="modal-field">
+      <div class="modal-field-label">Structure (SMILES/InChI)</div>
+      <div class="modal-field-value mono" id="modal-structure-text">—</div>
+    </div>
+    <div class="modal-field">
+      <div class="modal-field-label">Also annotated as</div>
+      <div class="modal-field-value" id="modal-aliases">—</div>
+    </div>
+    <div class="modal-field">
+      <div class="modal-field-label">Libraries</div>
+      <div class="modal-field-value" id="modal-libraries">—</div>
+    </div>
+    <div class="modal-field">
+      <div class="modal-field-label" id="modal-links-label">Mirror plot links</div>
+      <div class="modal-links" id="modal-links"></div>
+    </div>
+  </div>
+</div>
+
+<!-- RDKit.js: needed for InChIKey/Murcko-scaffold/ECFP4 cheminformatics, which has
+     no pure-JS equivalent at this depth. Loaded from jsdelivr per NextGenWebApps'
+     "CDN allowed when genuinely necessary" rule. -->
+<script src="https://cdn.jsdelivr.net/npm/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
+<script>
+"use strict";
+
+// ============================================================================
+// Constants (bin/constants.py)
+// ============================================================================
+var DEFAULT_SCORE_WEIGHTS = {
+  structure_agreement: 40 / 100,
+  tanimoto: 15 / 100,
+  cosine_consistency: 20 / 100,
+  max_cosine: 15 / 100,
+  shared_peaks: 5 / 100,
+  library_diversity: 5 / 100
+};
+var K_SHARED_PEAKS = 5;
+var PPM_TOLERANCE = 5.0;
+var PPM_SIGMA = 10.0;
+var PPM_FLOOR = 0.7;
+var PPM_GATE_MODE = true;
+var SUPPORT_ALPHA = 1.0;
+var SUPPORT_BETA = 1.0;
+var K_LIBRARY_DIVERSITY = 5;
+var UNKNOWN_STRUCTURE_PENALTY = 0.5;
+var UNKNOWN_STRUCTURE_CAP = 55.0;
+var DEFAULT_MS2_TOLERANCE_DA = 0.02;
+var DEFAULT_NOISE_THRESHOLD = 0.01;
+var DEFAULT_MAX_PEAK_NUM = 100;
+var GNPS2_HOST = "https://gnps2.org";
+var LOADER_TIMEOUT_MS = 20000;
+
+function confidenceCategory(score) {
+  if (score >= 80) return ["Consistent evidence", "success"];
+  if (score >= 55) return ["Inconclusive", "warning"];
+  return ["Inconsistent evidence", "danger"];
+}
+
+// ============================================================================
+// Small utilities
+// ============================================================================
+var NULL_TOKENS = {"": 1, "nan": 1, "none": 1, "null": 1, "n/a": 1, "na": 1};
+
+function toText(v) {
+  if (v === null || v === undefined) return "";
+  var s = String(v).trim();
+  if (s.toLowerCase() === "nan") return "";
+  return s;
+}
+function isValidField(v) {
+  if (v === null || v === undefined) return false;
+  var s = String(v).trim().toLowerCase();
+  return !NULL_TOKENS.hasOwnProperty(s);
+}
+function toNum(v, dflt) {
+  var n = parseFloat(v);
+  return isFinite(n) ? n : (dflt === undefined ? NaN : dflt);
+}
+function mean(arr) {
+  if (!arr.length) return NaN;
+  var s = 0;
+  for (var i = 0; i < arr.length; i++) s += arr[i];
+  return s / arr.length;
+}
+function std(arr) {
+  if (arr.length < 2) return NaN;
+  var m = mean(arr), s = 0;
+  for (var i = 0; i < arr.length; i++) s += (arr[i] - m) * (arr[i] - m);
+  return Math.sqrt(s / (arr.length - 1));
+}
+function median(arr) {
+  var a = arr.filter(function (x) { return !isNaN(x); }).slice().sort(function (x, y) { return x - y; });
+  if (!a.length) return NaN;
+  var mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
+function groupBy(rows, keyFn) {
+  var map = {};
+  var order = [];
+  for (var i = 0; i < rows.length; i++) {
+    var k = keyFn(rows[i]);
+    if (!map.hasOwnProperty(k)) { map[k] = []; order.push(k); }
+    map[k].push(rows[i]);
+  }
+  return { map: map, order: order };
+}
+function cleanCompoundName(name) {
+  if (typeof name !== "string") return name;
+  name = name.trim();
+  if (/^Candidate\s+\S+.*\(delta\s+mass:[^)]*\)/i.test(name)) return "";
+  name = name.replace(/\s*\(known structural isomers:[^)]*\)/i, "");
+  var splitLast = function (s, re) { var p = s.split(re); return p[p.length - 1]; };
+  var splitFirst = function (s, re) { return s.split(re)[0]; };
+  name = splitLast(name, /[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,5}_[A-Z,0-9]{4,15}_/);
+  name = splitLast(name, /[A-Z]{3,6}[0-9]{8,12}-[0-9]{2,3}!/);
+  name = splitLast(name, /((Massbank:)|(MassbankEU:))[A-Z]{2}[0-9]{5,6}.*\|/);
+  name = splitLast(name, /((Massbank:)|(MassbankEU:))[A-Z]{2}[0-9]{5,6}/);
+  name = splitLast(name, /HMDB:HMDB[0-9]{4,7}-[0-9]{1,7}/);
+  name = splitLast(name, /MoNA:[0-9]{5,10}/);
+  name = splitLast(name, /ReSpect:[A-Z]{2,3}[0-9]{6}.*\|/);
+  name = splitLast(name, /[A-Z]{2,3}[0-9]{6}( )/);
+  name = splitLast(name, /^[0-9]{4}_/);
+  name = splitFirst(name, /_((HCD)|(CID))[0-9]{2}_[0-9]{5,6}$/);
+  name = splitFirst(name, /(?: - )?[0-9]+(?:\.[0-9]+)? ?[eE][Vv](?: Unknown)?$/);
+  name = name.replace(/\s*CollisionEnergy:\d+\s*$/i, "");
+  ["Spectral Match to", "from NIST14", "Massbank:"].forEach(function (p) {
+    name = name.split(p).join("");
+  });
+  name = name.replace(/^[;\s]+|[;\s]+$/g, "");
+  var parts = name.split(" ");
+  var end = parts[parts.length - 1];
+  if (/^[0-9]{2,4}\.[0-9]$/.test(end)) {
+    name = name.slice(0, name.length - end.length).trim();
+  }
+  name = name.trim();
+  if (/^\d{2,7}-\d{2}-\d$/.test(name)) return "";
+  return name;
+}
+function findFirstColumn(columns, candidates) {
+  var lowerMap = {};
+  for (var i = 0; i < columns.length; i++) lowerMap[columns[i].toLowerCase()] = columns[i];
+  for (var j = 0; j < candidates.length; j++) {
+    var c = candidates[j].toLowerCase();
+    if (lowerMap.hasOwnProperty(c)) return lowerMap[c];
+  }
+  return null;
+}
+
+// ============================================================================
+// RDKit.js wrapper (bin/normalizer.py + bin/tanimoto.py cheminformatics)
+// ============================================================================
+var RDKitMod = null;
+var molCache = {}; // smiles/inchi text -> RDKit mol JSON summary (cached results, not raw mol objects)
+
+function loadRDKit() {
+  return initRDKitModule().then(function (RDKit) {
+    RDKitMod = RDKit;
+    return RDKit;
+  });
+}
+
+function getMolFromSmiles(smiles) {
+  if (!smiles) return null;
+  try {
+    var mol = RDKitMod.get_mol(smiles);
+    if (mol && mol.is_valid()) return mol;
+    if (mol) mol.delete();
+    return null;
+  } catch (e) { return null; }
+}
+// KNOWN GAP (see webapp/TODO.md): neither RDKit.js's minimal build nor
+// OpenChemLib.js's CDN build parse InChI at all (both checked/spiked) — no
+// `get_mol_from_inchi` export, and `get_mol()` does not auto-detect InChI
+// text. This function is kept as a stable call site (returns null today) in
+// case a future RDKit.js build adds InChI support. The practical impact is
+// covered by `deriveSmilesFromInchi()` (PubChem PUG REST fallback, run once
+// per task before scoring), which fills in a SMILES for INCHI-only rows so
+// they reach RDKit.js as SMILES like any other row — this function only
+// still matters for the rare row where even that PubChem lookup fails.
+function getMolFromInchi(inchi) {
+  if (!inchi || !RDKitMod.get_mol_from_inchi) return null;
+  try {
+    var mol = RDKitMod.get_mol_from_inchi(inchi);
+    if (mol && mol.is_valid()) return mol;
+    if (mol) mol.delete();
+    return null;
+  } catch (e) { return null; }
+}
+
+// Planar (stereo-stripped) InChIKey from a SMILES string.
+var _planarInchiKeyCache = {};
+function smilesToPlanarInchiKey(smiles) {
+  if (_planarInchiKeyCache.hasOwnProperty(smiles)) return _planarInchiKeyCache[smiles];
+  var result = null;
+  var mol = getMolFromSmiles(smiles);
+  if (mol) {
+    try {
+      var flatSmiles = mol.get_smiles(JSON.stringify({ canonical: true, doIsomericSmiles: false }));
+      var flatMol = getMolFromSmiles(flatSmiles);
+      if (flatMol) {
+        var inchi = flatMol.get_inchi();
+        if (inchi && RDKitMod.get_inchikey_for_inchi) {
+          var key = RDKitMod.get_inchikey_for_inchi(inchi);
+          if (key) result = key.split("-")[0];
+        }
+        flatMol.delete();
+      }
+    } catch (e) { /* leave null */ }
+    mol.delete();
+  }
+  _planarInchiKeyCache[smiles] = result;
+  return result;
+}
+
+var _inchiToPlanarKeyCache = {};
+function inchiToPlanarInchiKey(inchi) {
+  if (_inchiToPlanarKeyCache.hasOwnProperty(inchi)) return _inchiToPlanarKeyCache[inchi];
+  var result = null;
+  try {
+    if (RDKitMod.get_inchikey_for_inchi) {
+      // Round-trip through a mol to strip stereo first, matching Python's
+      // MolFromInchi -> RemoveStereochemistry -> MolToInchi -> InchiToInchiKey.
+      var mol = getMolFromInchi(inchi);
+      if (mol) {
+        var flatSmiles = mol.get_smiles(JSON.stringify({ canonical: true, doIsomericSmiles: false }));
+        mol.delete();
+        var flatMol = getMolFromSmiles(flatSmiles);
+        if (flatMol) {
+          var flatInchi = flatMol.get_inchi();
+          flatMol.delete();
+          if (flatInchi) {
+            var key = RDKitMod.get_inchikey_for_inchi(flatInchi);
+            if (key) result = key.split("-")[0];
+          }
+        }
+      }
+    }
+  } catch (e) { /* leave null */ }
+  _inchiToPlanarKeyCache[inchi] = result;
+  return result;
+}
+
+// bin/normalizer.py::_canonical_structure_key
+function canonicalStructureKey(row) {
+  var planar = toText(row["InChIKey-Planar"]);
+  if (isValidField(planar)) return planar;
+
+  var inchikey = toText(row["InChIKey"]);
+  if (isValidField(inchikey)) return inchikey.split("-")[0];
+
+  var smiles = toText(row["Smiles"]);
+  if (isValidField(smiles)) {
+    var k1 = smilesToPlanarInchiKey(smiles);
+    if (k1) return k1;
+  }
+
+  var inchi = toText(row["INCHI"]);
+  if (isValidField(inchi)) {
+    var k2 = inchiToPlanarInchiKey(inchi);
+    if (k2) return k2;
+  }
+
+  return "UNKNOWN_STRUCTURE";
+}
+
+// Canonical SMILES (bin/tanimoto.py::_canonical_smiles)
+var _canonicalSmilesCache = {};
+function canonicalSmiles(smiles) {
+  if (_canonicalSmilesCache.hasOwnProperty(smiles)) return _canonicalSmilesCache[smiles];
+  var result = null;
+  var mol = getMolFromSmiles(smiles);
+  if (mol) {
+    try { result = mol.get_smiles(); } catch (e) { result = null; }
+    mol.delete();
+  }
+  _canonicalSmilesCache[smiles] = result;
+  return result;
+}
+
+// ECFP4 (Morgan r=2, 2048 bits) fingerprint as a '0'/'1' bitstring, cached.
+var _morganFpCache = {};
+function morganFingerprint(smiles) {
+  if (_morganFpCache.hasOwnProperty(smiles)) return _morganFpCache[smiles];
+  var result = null;
+  var mol = getMolFromSmiles(smiles);
+  if (mol) {
+    try { result = mol.get_morgan_fp(JSON.stringify({ radius: 2, nBits: 2048 })); }
+    catch (e) { result = null; }
+    mol.delete();
+  }
+  _morganFpCache[smiles] = result;
+  return result;
+}
+function tanimotoFromBitstrings(a, b) {
+  var inter = 0, union = 0;
+  for (var i = 0; i < a.length; i++) {
+    var x = a.charCodeAt(i) === 49, y = b.charCodeAt(i) === 49; // '1' === 49
+    if (x || y) union++;
+    if (x && y) inter++;
+  }
+  return union === 0 ? 0.0 : inter / union;
+}
+
+// bin/tanimoto.py::compute_mean_pairwise_tanimoto
+function computeMeanPairwiseTanimoto(uniqueSmiles) {
+  var fps = [];
+  for (var i = 0; i < uniqueSmiles.length; i++) {
+    var fp = morganFingerprint(uniqueSmiles[i]);
+    if (fp) fps.push(fp);
+  }
+  if (fps.length === 0) return [0.5, "unavailable"];
+  if (fps.length === 1) return [1.0, "single_structure"];
+  var sims = [];
+  for (var a = 0; a < fps.length; a++) {
+    for (var b = a + 1; b < fps.length; b++) sims.push(tanimotoFromBitstrings(fps[a], fps[b]));
+  }
+  return [Math.round(mean(sims) * 10000) / 10000, "tanimoto_ecfp4"];
+}
+
+// bin/tanimoto.py::scan_tanimoto
+function scanTanimoto(smilesIterable, supportFraction) {
+  var seen = {};
+  var uniqueSmiles = [];
+  for (var i = 0; i < smilesIterable.length; i++) {
+    var raw = smilesIterable[i];
+    var smi = raw === null || raw === undefined ? "" : String(raw).trim();
+    if (!smi || smi.toLowerCase() === "nan" || smi.toLowerCase() === "none") continue;
+    var canon = canonicalSmiles(smi);
+    var key = canon !== null ? canon : smi;
+    if (!seen.hasOwnProperty(key)) { seen[key] = 1; uniqueSmiles.push(key); }
+  }
+  if (uniqueSmiles.length === 0) return [supportFraction, "structure_agreement_fallback"];
+  return computeMeanPairwiseTanimoto(uniqueSmiles);
+}
+
+// bin/tanimoto.py::compute_cross_group_tanimoto
+function computeCrossGroupTanimoto(groupSmiles) {
+  var fps = {};
+  var ids = [];
+  Object.keys(groupSmiles).sort().forEach(function (gid) {
+    var smi = groupSmiles[gid];
+    if (smi === null || smi === undefined) return;
+    var fp = morganFingerprint(String(smi));
+    if (fp) { fps[gid] = fp; ids.push(gid); }
+  });
+  var result = {};
+  for (var i = 0; i < ids.length; i++) {
+    for (var j = i + 1; j < ids.length; j++) {
+      var sim = tanimotoFromBitstrings(fps[ids[i]], fps[ids[j]]);
+      result[ids[i] + "\u0001" + ids[j]] = Math.round(sim * 10000) / 10000;
+    }
+  }
+  return result;
+}
+
+// ============================================================================
+// Murcko scaffold + molecular formula, hand-rolled from mol.get_json()
+// (RDKit.js exposes no scaffold API — see plan doc for rationale.)
+// ============================================================================
+var ATOMIC_SYMBOLS = { 1: "H", 5: "B", 6: "C", 7: "N", 8: "O", 9: "F", 14: "Si", 15: "P", 16: "S",
+  17: "Cl", 35: "Br", 53: "I", 34: "Se", 33: "As", 3: "Li", 11: "Na", 19: "K", 12: "Mg", 20: "Ca",
+  26: "Fe", 30: "Zn" };
+
+function parseMolJson(mol) {
+  var j = JSON.parse(mol.get_json());
+  var m = j.molecules[0];
+  var defaults = j.defaults || {};
+  var atomDefaults = defaults.atom || {};
+  var atoms = (m.atoms || []).map(function (a) {
+    return {
+      z: a.z !== undefined ? a.z : (atomDefaults.z !== undefined ? atomDefaults.z : 6),
+      impHs: a.impHs !== undefined ? a.impHs : (atomDefaults.impHs !== undefined ? atomDefaults.impHs : 0)
+    };
+  });
+  var bondDefaults = defaults.bond || {};
+  var bonds = (m.bonds || []).map(function (b) {
+    return [b.atoms[0], b.atoms[1], b.bo !== undefined ? b.bo : (bondDefaults.bo !== undefined ? bondDefaults.bo : 1)];
+  });
+  var ringAtoms = {};
+  var ext = m.extensions || [];
+  for (var e = 0; e < ext.length; e++) {
+    if (ext[e].atomRings) {
+      ext[e].atomRings.forEach(function (ring) {
+        ring.forEach(function (idx) { ringAtoms[idx] = true; });
+      });
+    }
+  }
+  return { atoms: atoms, bonds: bonds, ringAtoms: ringAtoms };
+}
+
+var MOLBLOCK_SYMBOLS = { 0: "*" };
+Object.keys(ATOMIC_SYMBOLS).forEach(function (z) { MOLBLOCK_SYMBOLS[z] = ATOMIC_SYMBOLS[z]; });
+
+function padL(s, n) { s = String(s); while (s.length < n) s = " " + s; return s; }
+function padR(s, n) { s = String(s); while (s.length < n) s = s + " "; return s; }
+function fnum(n) { return padL(Number(n).toFixed(4), 10); }
+
+// Build a minimal V2000 molblock from a local atom/bond list so RDKit.js can
+// parse and canonicalize an arbitrary subgraph (used for side-chain fragments,
+// since RDKit.js exposes no ReplaceCore/submol API — see plan doc).
+function buildMolBlock(atoms, bonds) {
+  var lines = ["", "  gnps2annex", "",
+    padL(atoms.length, 3) + padL(bonds.length, 3) + "  0  0  0  0  0  0  0  0999 V2000"];
+  atoms.forEach(function (a) {
+    var sym = MOLBLOCK_SYMBOLS[a.z] || "C";
+    lines.push(fnum(0) + fnum(0) + fnum(0) + " " + padR(sym, 3) + "0  0  0  0  0  0  0  0  0  0  0  0");
+  });
+  bonds.forEach(function (b) {
+    lines.push(padL(b[0] + 1, 3) + padL(b[1] + 1, 3) + padL(b[2], 3) + "  0  0  0  0");
+  });
+  lines.push("M  END");
+  return lines.join("\n");
+}
+
+// Canonical SMILES for a fragment given as a subset of a parsed mol's atoms,
+// with a dummy (*) atom substituted at each bond severed from the rest of the
+// molecule — mirrors Chem.ReplaceCore's dummy-atom attachment points.
+// Falls back to a molecular-formula string if parsing/sanitization fails.
+function canonicalFragmentSmiles(parsed, fragAtomIndices) {
+  var fragSet = {};
+  fragAtomIndices.forEach(function (idx) { fragSet[idx] = true; });
+  var localIndex = {};
+  var localAtoms = [];
+  fragAtomIndices.forEach(function (idx) {
+    localIndex[idx] = localAtoms.length;
+    localAtoms.push({ z: parsed.atoms[idx].z });
+  });
+  var localBonds = [];
+  parsed.bonds.forEach(function (b) {
+    var inA = fragSet.hasOwnProperty(b[0]), inB = fragSet.hasOwnProperty(b[1]);
+    if (inA && inB) {
+      localBonds.push([localIndex[b[0]], localIndex[b[1]], b[2]]);
+    } else if (inA || inB) {
+      var insideGlobal = inA ? b[0] : b[1];
+      var dummyLocal = localAtoms.length;
+      localAtoms.push({ z: 0 });
+      localBonds.push([localIndex[insideGlobal], dummyLocal, 1]);
+    }
+  });
+  try {
+    var mb = buildMolBlock(localAtoms, localBonds);
+    var mol = RDKitMod.get_mol(mb);
+    if (mol && mol.is_valid()) {
+      var smi = mol.get_smiles();
+      mol.delete();
+      return smi.replace(/:\d+/g, ""); // strip incidental atom-map numbers
+    }
+    if (mol) mol.delete();
+  } catch (e) { /* fall through */ }
+  return molecularFormula(localAtoms);
+}
+
+function molecularFormula(atoms) {
+  var counts = {};
+  var totalH = 0;
+  for (var i = 0; i < atoms.length; i++) {
+    var sym = ATOMIC_SYMBOLS[atoms[i].z] || ("Elem" + atoms[i].z);
+    counts[sym] = (counts[sym] || 0) + 1;
+    totalH += atoms[i].impHs || 0;
+  }
+  if (totalH > 0) counts["H"] = (counts["H"] || 0) + totalH;
+  // Hill order: C, H, then alphabetical.
+  var keys = Object.keys(counts).sort();
+  var ordered = [];
+  if (counts.hasOwnProperty("C")) { ordered.push("C"); keys.splice(keys.indexOf("C"), 1); }
+  if (counts.hasOwnProperty("H")) { ordered.push("H"); keys.splice(keys.indexOf("H"), 1); }
+  ordered = ordered.concat(keys);
+  var out = "";
+  for (var k = 0; k < ordered.length; k++) {
+    var sym2 = ordered[k], n = counts[sym2];
+    out += sym2 + (n > 1 ? n : "");
+  }
+  return out;
+}
+
+// Standard Murcko scaffold: iteratively remove degree-1 atoms not in any ring.
+// Returns the retained atom-index set (scaffold), or null if nothing remains
+// (i.e. the whole molecule is acyclic).
+function murckoScaffoldAtomSet(atoms, bonds, ringAtoms) {
+  var n = atoms.length;
+  var alive = new Array(n);
+  for (var i = 0; i < n; i++) alive[i] = true;
+
+  function degree(idx) {
+    var d = 0;
+    for (var b = 0; b < bonds.length; b++) {
+      var pair = bonds[b];
+      if (!alive[pair[0]] || !alive[pair[1]]) continue;
+      if (pair[0] === idx || pair[1] === idx) d++;
+    }
+    return d;
+  }
+
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (var idx = 0; idx < n; idx++) {
+      if (!alive[idx] || ringAtoms[idx]) continue;
+      if (degree(idx) <= 1) { alive[idx] = false; changed = true; }
+    }
+  }
+
+  var kept = {};
+  var any = false;
+  for (var k = 0; k < n; k++) if (alive[k]) { kept[k] = true; any = true; }
+  return any ? kept : null;
+}
+
+// bin/normalizer.py::_build_positional_isomer_group_key
+var _posIsoCache = {};
+function buildPositionalIsomerGroupKey(inchi, smiles) {
+  inchi = toText(inchi);
+  smiles = toText(smiles);
+  var cacheKey = inchi + "\u0001" + smiles;
+  if (_posIsoCache.hasOwnProperty(cacheKey)) return _posIsoCache[cacheKey];
+
+  var mol = null;
+  if (inchi) mol = getMolFromInchi(inchi);
+  if (!mol && smiles) mol = getMolFromSmiles(smiles);
+
+  var result = "";
+  if (mol) {
+    try {
+      var flatSmiles = mol.get_smiles(JSON.stringify({ canonical: true, doIsomericSmiles: false }));
+      var flatMol = getMolFromSmiles(flatSmiles);
+      if (flatMol) {
+        var parsed = parseMolJson(flatMol);
+        var formula = molecularFormula(parsed.atoms);
+        var scaffoldAtoms = murckoScaffoldAtomSet(parsed.atoms, parsed.bonds, parsed.ringAtoms);
+        if (scaffoldAtoms) {
+          var scaffoldAtomList = Object.keys(scaffoldAtoms).map(Number);
+          var scaffoldAtomObjs = scaffoldAtomList.map(function (idx) { return parsed.atoms[idx]; });
+          var scaffoldFormula = molecularFormula(scaffoldAtomObjs);
+
+          // Side-chain fragments: connected components of the removed atoms,
+          // canonicalized by their multiset of element symbols (a name-only
+          // stand-in for RDKit's ReplaceCore + per-fragment canonical SMILES —
+          // exact SMILES-level fragment identity isn't reachable via RDKit.js,
+          // so fragments are compared by composition instead).
+          var removedIdx = [];
+          for (var idx2 = 0; idx2 < parsed.atoms.length; idx2++) {
+            if (!scaffoldAtoms[idx2]) removedIdx.push(idx2);
+          }
+          var visited = {};
+          var fragments = [];
+          removedIdx.forEach(function (start) {
+            if (visited[start]) return;
+            var stack = [start];
+            var comp = [];
+            visited[start] = true;
+            while (stack.length) {
+              var cur = stack.pop();
+              comp.push(cur);
+              parsed.bonds.forEach(function (pair) {
+                var other = pair[0] === cur ? pair[1] : (pair[1] === cur ? pair[0] : null);
+                if (other === null) return;
+                if (scaffoldAtoms[other]) return; // stay within removed set
+                if (!visited[other]) { visited[other] = true; stack.push(other); }
+              });
+            }
+            fragments.push(canonicalFragmentSmiles(parsed, comp));
+          });
+          fragments.sort();
+          result = "POSISO|" + formula + "|" + scaffoldFormula + "|" + fragments.join("|");
+        }
+        flatMol.delete();
+      }
+    } catch (e) { /* leave "" */ }
+    mol.delete();
+  }
+
+  _posIsoCache[cacheKey] = result;
+  return result;
+}
+
+// ============================================================================
+// WCRS (bin/wcrs.py) — pure arithmetic
+// ============================================================================
+function wcrs(subgroups, similarities, alpha) {
+  alpha = alpha === undefined ? 1.0 : alpha;
+  var valid = subgroups.filter(function (sg) { return sg.size > 0; });
+  if (!valid.length) throw new Error("wcrs: no subgroups with size > 0");
+
+  if (valid.length === 1) {
+    var only = valid[0];
+    var r0 = { id: only.id, size: only.size, size_weight: 1.0, avg_similarity: 1.0, raw_score: 1.0, normalized_score: 1.0 };
+    return { results: [r0], winner: only.id };
+  }
+
+  var N = 0;
+  var sizeMap = {};
+  valid.forEach(function (sg) { N += sg.size; sizeMap[sg.id] = sg.size; });
+
+  function sim(a, b) {
+    if (similarities.hasOwnProperty(a + "\u0001" + b)) return similarities[a + "\u0001" + b];
+    if (similarities.hasOwnProperty(b + "\u0001" + a)) return similarities[b + "\u0001" + a];
+    return 0.0;
+  }
+
+  var raw = valid.map(function (sg) {
+    var cross = 0;
+    valid.forEach(function (other) {
+      if (other.id === sg.id) return;
+      cross += sizeMap[other.id] * sim(sg.id, other.id);
+    });
+    var dBar = (sg.size * 1.0 + cross) / N;
+    var sizeWeight = Math.pow(sg.size / N, alpha);
+    return { sg: sg, sizeWeight: sizeWeight, dBar: dBar, raw: sizeWeight * dBar };
+  });
+
+  var total = raw.reduce(function (s, r) { return s + r.raw; }, 0);
+  var results = raw.map(function (r) {
+    return {
+      id: r.sg.id, size: r.sg.size,
+      size_weight: Math.round(r.sizeWeight * 1e6) / 1e6,
+      avg_similarity: Math.round(r.dBar * 1e6) / 1e6,
+      raw_score: Math.round(r.raw * 1e6) / 1e6,
+      normalized_score: Math.round((r.raw / total) * 1e6) / 1e6
+    };
+  });
+  var winner = results.reduce(function (best, r) { return r.normalized_score > best.normalized_score ? r : best; }, results[0]);
+  return { results: results, winner: winner.id };
+}
+
+// ============================================================================
+// Normalizer: column mapping + structure propagation (bin/normalizer.py)
+// ============================================================================
+var CANONICAL_COLUMNS = {
+  "#Scan#": ["#Scan#", "scan", "Scan"],
+  "MQScore": ["MQScore", "Cosine", "cosine"],
+  "Compound_Name": ["Compound_Name", "compound_name", "Compound Name", "CompoundName"],
+  "SpectrumFile": ["SpectrumFile", "spectrumfile", "Spectrum File"],
+  "SpectrumID": ["SpectrumID", "spectrumid", "Spectrum ID"],
+  "library_usi": ["library_usi", "LibraryUSI", "Library_USI", "library usi"],
+  "Smiles": ["Smiles", "SMILES", "smiles"],
+  "InChIKey": ["InChIKey", "inchikey", "INCHIKEY"],
+  "InChIKey-Planar": ["InChIKey-Planar", "inchikey-planar", "INCHIKEY-PLANAR"],
+  "INCHI": ["INCHI", "InChI", "inchi"],
+  "Library_Class": ["Library_Class", "library_class", "Library Class", "LibraryClass", "libraryclass"]
+};
+var STRUCTURE_FIELDS = ["Smiles", "InChIKey", "InChIKey-Planar", "INCHI"];
+
+function normalizeLibraryMatchesTable(rows) {
+  if (!rows || !rows.length) return rows;
+  var columns = Object.keys(rows[0]);
+  var renameMap = {};
+  Object.keys(CANONICAL_COLUMNS).forEach(function (canon) {
+    if (columns.indexOf(canon) !== -1) return;
+    var matched = findFirstColumn(columns, CANONICAL_COLUMNS[canon]);
+    if (matched) renameMap[matched] = canon;
+  });
+  if (Object.keys(renameMap).length) {
+    rows = rows.map(function (row) {
+      var out = {};
+      Object.keys(row).forEach(function (k) { out[renameMap[k] || k] = row[k]; });
+      return out;
+    });
+  }
+
+  rows = deriveLibraryUsiFromSpectrumId(rows);
+  rows = harmonizeMetadata(rows);
+  rows = propagateStructureByName(rows);
+  return rows;
+}
+
+function normalizeLibraryUsi(libraryUsi) {
+  libraryUsi = toText(libraryUsi);
+  if (!libraryUsi) return "";
+  if (libraryUsi.indexOf("mzspec:GNPS:GNPS-LIBRARY:accession:") !== -1) return libraryUsi;
+  var prefix = "mzspec:GNPS:GNPS-LIBRARY:";
+  if (libraryUsi.indexOf(prefix) === 0) {
+    var suffix = libraryUsi.slice(prefix.length);
+    if (suffix.indexOf("accession:") === 0) return prefix + suffix;
+    if (suffix.indexOf("CCMSLIB") === 0) return prefix + "accession:" + suffix;
+  }
+  if (libraryUsi.indexOf("CCMSLIB") === 0) return prefix + "accession:" + libraryUsi;
+  return libraryUsi;
+}
+
+function deriveLibraryUsiFromSpectrumId(rows) {
+  var cols = rows.length ? Object.keys(rows[0]) : [];
+  if (cols.indexOf("library_usi") !== -1 || cols.indexOf("SpectrumID") === -1) return rows;
+  return rows.map(function (row) {
+    var out = {};
+    Object.keys(row).forEach(function (k) { out[k] = row[k]; });
+    out.library_usi = normalizeLibraryUsi(row.SpectrumID);
+    return out;
+  });
+}
+
+// bin/normalizer.py::_harmonize_metadata — propagate structure fields within
+// InChIKey-Planar groups, and pick a canonical (shortest cleaned) name.
+function harmonizeMetadata(rows) {
+  if (!rows.length || !rows[0].hasOwnProperty("InChIKey-Planar")) return rows;
+  var presentFields = STRUCTURE_FIELDS.filter(function (f) { return rows[0].hasOwnProperty(f); });
+  if (!presentFields.length) return rows;
+
+  rows = rows.map(function (r) { var o = {}; Object.keys(r).forEach(function (k) { o[k] = r[k]; }); return o; });
+
+  function richness(row) {
+    var c = 0;
+    presentFields.forEach(function (f) { if (isValidField(row[f])) c++; });
+    return c;
+  }
+
+  var grouped = groupBy(rows.filter(function (r) { return isValidField(r["InChIKey-Planar"]); }), function (r) { return r["InChIKey-Planar"]; });
+  grouped.order.forEach(function (key) {
+    var group = grouped.map[key];
+    var best = group.reduce(function (a, b) { return richness(b) > richness(a) ? b : a; }, group[0]);
+    group.forEach(function (row) {
+      if (row === best) return;
+      presentFields.forEach(function (field) {
+        if (isValidField(best[field]) && !isValidField(row[field])) row[field] = best[field];
+      });
+    });
+  });
+
+  if (rows[0].hasOwnProperty("Compound_Name")) {
+    var canonicalMap = {};
+    grouped.order.forEach(function (key) {
+      var group = grouped.map[key];
+      var cleaned = group.map(function (r) { return cleanCompoundName(String(r.Compound_Name)); });
+      var nonEmpty = cleaned.filter(function (c) { return c.trim().length > 0; });
+      canonicalMap[key] = nonEmpty.length
+        ? nonEmpty.reduce(function (a, b) { return b.length < a.length ? b : a; })
+        : cleaned[0];
+    });
+    rows.forEach(function (row) {
+      var key = row["InChIKey-Planar"];
+      row._canonical_name = canonicalMap.hasOwnProperty(key) ? canonicalMap[key] : cleanCompoundName(String(row.Compound_Name));
+    });
+  } else {
+    rows.forEach(function (row) { row._canonical_name = ""; });
+  }
+  return rows;
+}
+
+var ADDUCT_OFFSETS = [1.00728, 22.98922, 38.96316, 18.03437, -1.00728, 44.99765, 34.96885, 0.0];
+var MASS_TOLERANCE_DA = 0.5;
+var CATALOG_ID_RE = /^[A-Z]{1,5}[0-9]{5,}$/;
+
+function massIsConsistent(exactMass, specMz) {
+  var em = parseFloat(exactMass), mz = parseFloat(specMz);
+  if (!isFinite(em) || !isFinite(mz)) return true;
+  if (em <= 0 || mz <= 0) return true;
+  for (var i = 0; i < ADDUCT_OFFSETS.length; i++) {
+    if (Math.abs(em + ADDUCT_OFFSETS[i] - mz) < MASS_TOLERANCE_DA) return true;
+  }
+  if (Math.abs((em + 2 * 1.00728) / 2 - mz) < MASS_TOLERANCE_DA) return true;
+  if (Math.abs((em + 3 * 1.00728) / 3 - mz) < MASS_TOLERANCE_DA) return true;
+  return false;
+}
+
+// bin/normalizer.py::_propagate_structure_by_name
+function propagateStructureByName(rows) {
+  if (!rows.length || !rows[0].hasOwnProperty("Compound_Name")) return rows;
+  var presentFields = STRUCTURE_FIELDS.filter(function (f) { return rows[0].hasOwnProperty(f); });
+  if (!presentFields.length) return rows;
+
+  var cols = Object.keys(rows[0]);
+  var exactMassCol = findFirstColumn(cols, ["ExactMass", "exact_mass", "exactmass"]);
+  var specMzCol = findFirstColumn(cols, ["SpecMZ", "Precursor_MZ", "precursor_mz"]);
+
+  rows = rows.map(function (r) { var o = {}; Object.keys(r).forEach(function (k) { o[k] = r[k]; }); return o; });
+
+  function hasStructure(row) { return presentFields.some(function (f) { return isValidField(row[f]); }); }
+  var structuredRows = rows.filter(hasStructure);
+  if (!structuredRows.length) return rows;
+
+  function fieldCount(row) { var c = 0; presentFields.forEach(function (f) { if (isValidField(row[f])) c++; }); return c; }
+
+  var byName = groupBy(structuredRows, function (r) { return cleanCompoundName(String(r.Compound_Name)).toLowerCase(); });
+  var nameToSource = {};
+  byName.order.forEach(function (nameLower) {
+    nameLower = nameLower.trim();
+    if (!nameLower || nameLower === "nan" || nameLower === "none") return;
+    var group = byName.map[nameLower];
+    var validKeys = {};
+    group.forEach(function (r) {
+      var k = canonicalStructureKey(r);
+      if (k !== "UNKNOWN_STRUCTURE") validKeys[k] = true;
+    });
+    if (Object.keys(validKeys).length !== 1) return;
+    var best = group.reduce(function (a, b) { return fieldCount(b) > fieldCount(a) ? b : a; }, group[0]);
+    var source = {};
+    presentFields.forEach(function (f) { source[f] = best[f]; });
+    if (exactMassCol) source._exact_mass = best[exactMassCol];
+    nameToSource[nameLower] = source;
+  });
+  if (!Object.keys(nameToSource).length) return rows;
+
+  rows.forEach(function (row) {
+    var needsAny = presentFields.some(function (f) { return !isValidField(row[f]); });
+    if (!needsAny) return;
+    var name = cleanCompoundName(String(row.Compound_Name)).toLowerCase();
+    var source = nameToSource[name];
+    if (!source) return;
+    if (exactMassCol && specMzCol && source.hasOwnProperty("_exact_mass")) {
+      if (!massIsConsistent(source._exact_mass, row[specMzCol])) return;
+    }
+    presentFields.forEach(function (field) {
+      if (isValidField(source[field]) && !isValidField(row[field])) row[field] = source[field];
+    });
+  });
+  return rows;
+}
+
+// bin/normalizer.py::_annotate_support_groups
+function annotateSupportGroups(rows) {
+  var pairMap = {};
+  rows.forEach(function (row) {
+    var inchi = String(row.INCHI !== undefined ? row.INCHI : "");
+    var smiles = String(row.Smiles !== undefined ? row.Smiles : "");
+    var pairKey = inchi + "\u0001" + smiles;
+    if (!pairMap.hasOwnProperty(pairKey)) {
+      pairMap[pairKey] = buildPositionalIsomerGroupKey(inchi, smiles);
+    }
+    row._positional_group_key = pairMap[pairKey];
+  });
+
+  // KNOWN DIFFERENCE FROM THE PYTHON APP (see plan doc / project notes):
+  // when a structure key's positional-isomer group is ambiguous (a tie in
+  // group frequency), Python's `series.mode().iloc[0]` and this reduce() can
+  // pick different winners among the tied candidates — both are valid modes,
+  // just different tie-break conventions (pandas' internal ordering vs.
+  // first-seen-in-array order here). Verified against a real FBMN task
+  // (b22ff1bc41624e29a28cf6e12fe17ad5): 1341/1348 scans (99.5%) match the
+  // Python scorer exactly; the remaining ~1% are ties resolved this way,
+  // not a cheminformatics gap (Murcko scaffold + fragment canonicalization
+  // themselves were verified to match, see rdkit_spike.html/spike4.html).
+  var exactToPositional = {};
+  var byExact = groupBy(rows.filter(function (r) { return r._positional_group_key !== ""; }), function (r) { return r._structure_key; });
+  byExact.order.forEach(function (key) {
+    var group = byExact.map[key];
+    var counts = {};
+    group.forEach(function (r) { counts[r._positional_group_key] = (counts[r._positional_group_key] || 0) + 1; });
+    var mode = Object.keys(counts).reduce(function (a, b) { return counts[b] > counts[a] ? b : a; }, Object.keys(counts)[0]);
+    exactToPositional[key] = mode;
+  });
+
+  rows.forEach(function (row, i) {
+    var key = exactToPositional.hasOwnProperty(row._structure_key) ? exactToPositional[row._structure_key] : row._positional_group_key;
+    if (!key) key = row._structure_key;
+    row._support_group_key = key;
+    if (row._support_group_key === "UNKNOWN_STRUCTURE") row._support_group_key = "UNKNOWN_STRUCTURE_" + i;
+  });
+  return rows;
+}
+
+// bin/normalizer.py::_derive_smiles_from_inchi — ported via a PubChem fallback,
+// since RDKit.js (and OpenChemLib.js, checked) both exclude InChI parsing from
+// their distributed browser builds (confirmed via spike; likely InChI's
+// licensing terms make bundling it harder than SMILES/molfile support). This
+// is a best-effort, exact-match structural lookup (INCHI -> SMILES via
+// PubChem PUG REST), not a fuzzy name search — capped and cached so a task
+// with many affected rows doesn't hammer PubChem or stall scoring.
+var PUBCHEM_INCHI_LOOKUP_CAP = 60; // max unique INCHIs resolved per task
+var PUBCHEM_INCHI_LOOKUP_CONCURRENCY = 4;
+var PUBCHEM_INCHI_LOOKUP_TIMEOUT_MS = 8000;
+var _pubchemSmilesCache = {};
+
+function fetchSmilesFromInchiViaPubChem(inchi) {
+  if (_pubchemSmilesCache.hasOwnProperty(inchi)) return Promise.resolve(_pubchemSmilesCache[inchi]);
+  var url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchi/property/IsomericSMILES/JSON";
+  var body = "inchi=" + encodeURIComponent(inchi);
+  return fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body
+  }, PUBCHEM_INCHI_LOOKUP_TIMEOUT_MS).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.json();
+  }).then(function (payload) {
+    var props = (payload.PropertyTable && payload.PropertyTable.Properties) || [];
+    var smiles = null;
+    if (props.length) {
+      var p = props[0];
+      smiles = p.IsomericSMILES || p.SMILES || p.ConnectivitySMILES || null;
+    }
+    _pubchemSmilesCache[inchi] = smiles;
+    return smiles;
+  }).catch(function () {
+    _pubchemSmilesCache[inchi] = null;
+    return null;
+  });
+}
+
+// Some GNPS2 library exports store INCHI with the surrounding CSV/TSV quote
+// characters left in as literal text (observed on real data, e.g.
+// `"InChI=1S/C6H13NO2/...` with a leading/trailing `"`), and a few rows have
+// a SMILES value sitting in the INCHI column entirely (data-quality issue
+// upstream, not a parsing bug here). Strip stray quotes and reject anything
+// that doesn't start with the InChI prefix so those rows are skipped rather
+// than sent to PubChem as a guaranteed-failing lookup.
+function normalizeInchiText(raw) {
+  var s = toText(raw).replace(/^["']+|["']+$/g, "").trim();
+  return s.indexOf("InChI=") === 0 ? s : null;
+}
+
+function deriveSmilesFromInchi(rows, onProgress) {
+  var targets = [];
+  rows.forEach(function (r) {
+    if (isValidField(r.Smiles) || !isValidField(r.INCHI)) return;
+    var cleaned = normalizeInchiText(r.INCHI);
+    if (!cleaned) return;
+    r.INCHI = cleaned;
+    targets.push(r);
+  });
+  if (!targets.length) return Promise.resolve({ attempted: 0, resolved: 0 });
+
+  var uniqueInchis = [];
+  var seen = {};
+  targets.forEach(function (r) {
+    var inchi = toText(r.INCHI);
+    if (!seen[inchi]) { seen[inchi] = true; uniqueInchis.push(inchi); }
+  });
+  var capped = uniqueInchis.slice(0, PUBCHEM_INCHI_LOOKUP_CAP);
+
+  var i = 0, resolved = 0;
+  function worker() {
+    if (i >= capped.length) return Promise.resolve();
+    var inchi = capped[i++];
+    return fetchSmilesFromInchiViaPubChem(inchi).then(function (smiles) {
+      if (smiles) resolved++;
+      if (onProgress) onProgress(i, capped.length);
+      return worker();
+    });
+  }
+  var workers = [];
+  for (var w = 0; w < PUBCHEM_INCHI_LOOKUP_CONCURRENCY; w++) workers.push(worker());
+
+  return Promise.all(workers).then(function () {
+    targets.forEach(function (r) {
+      var smiles = _pubchemSmilesCache[toText(r.INCHI)];
+      if (smiles) r.Smiles = smiles;
+    });
+    return { attempted: capped.length, resolved: resolved };
+  });
+}
+
+// bin/normalizer.py::_infer_resolved_workflow / _build_query_usi
+function inferResolvedWorkflow(rows, workflowChoice) {
+  workflowChoice = (workflowChoice || "auto").trim().toLowerCase();
+  if (["auto", "classic", "fbmn", "librarysearch"].indexOf(workflowChoice) !== -1 && workflowChoice !== "auto") return workflowChoice;
+  var cols = rows.length ? Object.keys(rows[0]) : [];
+  var col = findFirstColumn(cols, ["SpectrumFile"]);
+  if (!col) return "auto";
+  var observed = {};
+  rows.slice(0, 25).forEach(function (r) {
+    var v = toText(r[col]);
+    if (v) { var parts = v.split("/"); observed[parts[parts.length - 1]] = true; }
+  });
+  var generated = { "spectra_filtered.mgf": 1, "spectra_reformatted.mgf": 1 };
+  var keys = Object.keys(observed);
+  if (keys.length && keys.every(function (k) { return !generated.hasOwnProperty(k); })) return "librarysearch";
+  return "auto";
+}
+function buildQueryUsi(taskId, scan, workflowChoice, spectrumFile) {
+  if (workflowChoice === "librarysearch") {
+    spectrumFile = toText(spectrumFile).replace(/^\/+/, "");
+    if (!spectrumFile) return "";
+    return "mzspec:GNPS2:TASK-" + taskId + "-inputspectra/" + spectrumFile + ":scan:" + String(scan);
+  }
+  return "mzspec:GNPS2:TASK-" + taskId + "-nf_output/clustering/spectra_reformatted.mgf:scan:" + String(scan);
+}
+
+// ============================================================================
+// Scorer (bin/scorer.py::_compute_scan_level_confidence)
+// ============================================================================
+function normalizeScoreWeights(weights) {
+  var out = {};
+  Object.keys(DEFAULT_SCORE_WEIGHTS).forEach(function (k) {
+    var v = weights && weights.hasOwnProperty(k) ? parseFloat(weights[k]) : DEFAULT_SCORE_WEIGHTS[k];
+    if (!isFinite(v) || v < 0) v = DEFAULT_SCORE_WEIGHTS[k];
+    out[k] = v;
+  });
+  var total = Object.keys(out).reduce(function (s, k) { return s + out[k]; }, 0);
+  if (total <= 0) return Object.assign({}, DEFAULT_SCORE_WEIGHTS);
+  Object.keys(out).forEach(function (k) { out[k] = out[k] / total; });
+  return out;
+}
+function computeConfidenceScore(supportFraction, tanimotoScore, cosineConsistency, maxCosine, sharedPeaksScore, libraryDiversityScore, weights) {
+  var w = normalizeScoreWeights(weights);
+  var score = 100.0 * (
+    w.structure_agreement * supportFraction +
+    w.tanimoto * tanimotoScore +
+    w.cosine_consistency * cosineConsistency +
+    w.max_cosine * maxCosine +
+    w.shared_peaks * sharedPeaksScore +
+    w.library_diversity * libraryDiversityScore
+  );
+  return Math.min(100.0, Math.max(0.0, score));
+}
+
+function computeScanLevelConfidence(rows, opts) {
+  opts = opts || {};
+  var taskId = opts.taskId || "";
+  var workflowChoice = opts.workflowChoice || "auto";
+  var scoreWeights = normalizeScoreWeights(opts.scoreWeights);
+  var mgfIndex = opts.mgfIndex || null; // scan(string) -> peaks[[mz,intensity],...]
+  var retentionTimes = opts.retentionTimes || {}; // scan(string) -> retention time in minutes
+  var ppmSigma = isFinite(opts.ppmSigma) ? opts.ppmSigma : PPM_SIGMA;
+  var ppmFloor = isFinite(opts.ppmFloor) && opts.ppmFloor >= 0 && opts.ppmFloor <= 1 ? opts.ppmFloor : PPM_FLOOR;
+  var ppmGateMode = opts.ppmGateMode === undefined ? PPM_GATE_MODE : !!opts.ppmGateMode;
+
+  if (!rows.length) return [];
+  var cols = Object.keys(rows[0]);
+  var scanCol = findFirstColumn(cols, ["#Scan#", "scan", "Scan"]);
+  var cosineCol = findFirstColumn(cols, ["MQScore", "Cosine", "cosine"]);
+  var compoundCol = findFirstColumn(cols, ["Compound_Name", "compound_name", "Compound Name"]);
+  var spectrumFileCol = findFirstColumn(cols, ["SpectrumFile"]);
+  var smilesCol = findFirstColumn(cols, ["Smiles", "SMILES", "smiles"]);
+  var inchikeyCol = findFirstColumn(cols, ["InChIKey", "inchikey", "INCHIKEY"]);
+  var precursorMzCol = findFirstColumn(cols, ["SpecMZ", "Precursor_MZ", "precursor_mz"]);
+  var sharedPeaksCol = findFirstColumn(cols, ["SharedPeaks", "shared_peaks"]);
+  var mzErrorCol = findFirstColumn(cols, ["MZErrorPPM", "mz_error_ppm"]);
+  var libraryNameCol = cols.indexOf("LibraryName") !== -1 ? "LibraryName" : null;
+  var libraryUsiCol = findFirstColumn(cols, ["library_usi", "LibraryUSI", "library usi"]);
+  var adductCol = findFirstColumn(cols, ["Adduct", "adduct", "Precursor_type", "Precursor Type"]);
+  var inchiCol = findFirstColumn(cols, ["INCHI", "InChI", "inchi"]);
+
+  if (!scanCol) throw new Error("Could not find scan column (#Scan# / scan / Scan) in library results.");
+  if (!cosineCol) throw new Error("Could not find cosine score column (MQScore / Cosine).");
+
+  var work = rows.map(function (r) {
+    var o = {};
+    Object.keys(r).forEach(function (k) { o[k] = r[k]; });
+    o[scanCol] = String(o[scanCol]);
+    o._cosine = toNum(o[cosineCol], 0.0);
+    o._shared_peaks = sharedPeaksCol ? toNum(o[sharedPeaksCol], 0.0) : 0.0;
+    o._abs_ppm = mzErrorCol ? Math.abs(toNum(o[mzErrorCol], NaN)) : NaN;
+    o._structure_key = canonicalStructureKey(o);
+    o._compound = cleanCompoundName(String(compoundCol ? o[compoundCol] : "Unknown"));
+    o._spectrum_file = String(spectrumFileCol ? o[spectrumFileCol] : "");
+    o._library_usi = normalizeLibraryUsi(libraryUsiCol ? o[libraryUsiCol] : "");
+    o._library_name = String(libraryNameCol ? o[libraryNameCol] : "");
+    o._adduct = toText(adductCol ? o[adductCol] : "");
+    o._smiles = toText(smilesCol ? o[smilesCol] : "");
+    o._inchikey = toText(inchikeyCol ? o[inchikeyCol] : "");
+    o._inchi = toText(inchiCol ? o[inchiCol] : "");
+    return o;
+  });
+  work = annotateSupportGroups(work);
+
+  var resolvedWorkflow = inferResolvedWorkflow(work, workflowChoice);
+  var missingSet = { "": 1, "none": 1, "nan": 1, "n/a": 1, "na": 1, "null": 1 };
+  function isMissingVal(v) { return missingSet.hasOwnProperty(String(v).trim().toLowerCase()); }
+
+  var byScan = groupBy(work, function (r) { return r[scanCol]; });
+  var summary = [];
+
+  byScan.order.forEach(function (scan) {
+    var scanRows = byScan.map[scan];
+    var totalMatches = scanRows.length;
+
+    var missingStructures = 0;
+    scanRows.forEach(function (r) {
+      var smilesMissing = smilesCol ? isMissingVal(r[smilesCol]) : true;
+      var inchikeyMissing = inchikeyCol ? isMissingVal(r[inchikeyCol]) : true;
+      if (smilesMissing && inchikeyMissing) missingStructures++;
+    });
+
+    var byGroup = groupBy(scanRows, function (r) { return r._support_group_key; });
+    var grouped = byGroup.order.map(function (gkey) {
+      var g = byGroup.map[gkey];
+      var cosines = g.map(function (r) { return r._cosine; });
+      return {
+        _support_group_key: gkey,
+        count: g.length,
+        mean_cosine: mean(cosines),
+        std_cosine: std(cosines),
+        max_cosine: Math.max.apply(null, cosines),
+        mean_shared_peaks: mean(g.map(function (r) { return r._shared_peaks; })),
+        median_abs_ppm: median(g.map(function (r) { return r._abs_ppm; })),
+        rows: g
+      };
+    });
+    grouped.sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.max_cosine !== a.max_cosine) return b.max_cosine - a.max_cosine;
+      return b.mean_cosine - a.mean_cosine;
+    });
+
+    var groupRepSmiles = {};
+    if (smilesCol) {
+      byGroup.order.forEach(function (gkey) {
+        var g = byGroup.map[gkey];
+        var top = g.slice().sort(function (a, b) { return b._cosine - a._cosine; })[0];
+        var raw = toText(top[smilesCol]);
+        if (raw && raw.toLowerCase() !== "nan" && raw.toLowerCase() !== "none") {
+          var canon = canonicalSmiles(raw);
+          groupRepSmiles[gkey] = canon || raw;
+        } else {
+          groupRepSmiles[gkey] = null;
+        }
+      });
+    }
+
+    var wcrsSubgroups = grouped.map(function (g) { return { id: g._support_group_key, size: g.count }; });
+    var wcrsWinnerKey = null, tanimotoScore, tanimotoSource;
+    var anyRep = Object.keys(groupRepSmiles).some(function (k) { return groupRepSmiles[k] !== null; });
+
+    if (wcrsSubgroups.length >= 2 && anyRep) {
+      var crossSim = computeCrossGroupTanimoto(groupRepSmiles);
+      var wcrsResult = wcrs(wcrsSubgroups, crossSim, 1.0);
+      wcrsWinnerKey = wcrsResult.winner;
+      var winnerRes = wcrsResult.results.filter(function (r) { return r.id === wcrsWinnerKey; })[0];
+      tanimotoScore = winnerRes.avg_similarity;
+      tanimotoSource = "tanimoto_wcrs";
+    } else if (wcrsSubgroups.length === 1 && anyRep) {
+      tanimotoScore = (totalMatches + SUPPORT_ALPHA) / (totalMatches + SUPPORT_ALPHA + SUPPORT_BETA);
+      tanimotoSource = "single_structure";
+    } else {
+      var prelimFraction = totalMatches ? grouped[0].count / totalMatches : 0.0;
+      var scanSmiles = smilesCol ? scanRows.map(function (r) { return r[smilesCol]; }) : [];
+      var tRes = scanTanimoto(scanSmiles, prelimFraction);
+      tanimotoScore = tRes[0]; tanimotoSource = tRes[1];
+    }
+
+    var best;
+    if (wcrsWinnerKey !== null) {
+      best = grouped.filter(function (g) { return g._support_group_key === wcrsWinnerKey; })[0] || grouped[0];
+    } else {
+      best = grouped[0];
+    }
+
+    var countHits = scanRows.filter(function (r) { return r._support_group_key === grouped[0]._support_group_key; });
+    var countModeCounts = {};
+    countHits.forEach(function (r) { countModeCounts[r._compound] = (countModeCounts[r._compound] || 0) + 1; });
+    var countModeKeys = Object.keys(countModeCounts);
+    var countBasedTopCompound = countModeKeys.length
+      ? countModeKeys.reduce(function (a, b) { return countModeCounts[b] > countModeCounts[a] ? b : a; })
+      : "";
+
+    var supportGroupKey = best._support_group_key;
+    var structureHits = scanRows.filter(function (r) { return r._support_group_key === supportGroupKey; });
+    var representativeRow = structureHits.slice().sort(function (a, b) { return b._cosine - a._cosine; })[0];
+    var structureKey = representativeRow._structure_key || "UNKNOWN_STRUCTURE";
+    var topCompound = String(representativeRow._compound);
+
+    var globalBest = scanRows.reduce(function (a, b) { return b._cosine > a._cosine ? b : a; }, scanRows[0]);
+    var globalTopGroup = globalBest._support_group_key;
+    var globalTopCompound = globalBest._compound;
+    var topCosineOverridden = globalTopGroup !== supportGroupKey;
+
+    var supportFraction = totalMatches ? (best.count + SUPPORT_ALPHA) / (totalMatches + SUPPORT_ALPHA + SUPPORT_BETA) : 0.0;
+    var meanCosine = best.mean_cosine;
+    var maxCosine = best.max_cosine;
+
+    var rawSharedPeaks = isNaN(best.mean_shared_peaks) ? 0.0 : best.mean_shared_peaks;
+    var queryPeakCount = mgfIndex ? filteredPeakCount(mgfIndex, scan) : null;
+    var sharedPeaksScore, sharedPeaksSource;
+    if (queryPeakCount !== null && queryPeakCount > 0) {
+      sharedPeaksScore = Math.min(1.0, rawSharedPeaks / queryPeakCount);
+      sharedPeaksSource = "coverage_fraction";
+    } else {
+      sharedPeaksScore = rawSharedPeaks / (rawSharedPeaks + K_SHARED_PEAKS);
+      sharedPeaksSource = "soft_normalization";
+    }
+
+    var libraryDiversityScore = 0.0;
+    if (libraryNameCol) {
+      var uniqueLibs = {};
+      structureHits.forEach(function (r) {
+        var lib = String(r[libraryNameCol]);
+        if (["nan", "", "none"].indexOf(lib.toLowerCase()) === -1) uniqueLibs[lib] = true;
+      });
+      libraryDiversityScore = Math.min(Object.keys(uniqueLibs).length, K_LIBRARY_DIVERSITY) / K_LIBRARY_DIVERSITY;
+    }
+
+    var rawAbsPpm = best.median_abs_ppm;
+    var mzPrecision;
+    if (isNaN(rawAbsPpm) || !mzErrorCol) {
+      mzPrecision = 1.0;
+    } else if (ppmGateMode) {
+      mzPrecision = rawAbsPpm <= PPM_TOLERANCE ? 1.0 : ppmFloor;
+    } else {
+      var excess = Math.max(0.0, rawAbsPpm - PPM_TOLERANCE);
+      mzPrecision = ppmFloor + (1.0 - ppmFloor) * Math.exp(-(excess * excess) / (2.0 * ppmSigma * ppmSigma));
+    }
+
+    var representativeSpectrumFile = toText(representativeRow._spectrum_file);
+    var queryUsi = buildQueryUsi(taskId, scan, resolvedWorkflow, representativeSpectrumFile);
+
+    var queryEntropy = null, queryEntropyLabel = "N/A";
+    if (mgfIndex) {
+      var eResult = entropyFromMgfIndex(mgfIndex, scan);
+      if (eResult) { queryEntropy = eResult[0]; queryEntropyLabel = eResult[1]; }
+    }
+
+    var stdCosine = best.std_cosine;
+    var cosineConsistency, cosineConsistencySource;
+    if (isNaN(stdCosine) || best.count < 2) {
+      cosineConsistency = 0.0; cosineConsistencySource = "single_hit_undefined";
+    } else {
+      var cv = meanCosine > 0 ? stdCosine / meanCosine : 1.0;
+      cosineConsistency = Math.max(0.0, 1.0 - Math.min(1.0, cv));
+      cosineConsistencySource = "cosine_consistency";
+    }
+
+    var confidenceScore = computeConfidenceScore(supportFraction, tanimotoScore, cosineConsistency, maxCosine, sharedPeaksScore, libraryDiversityScore, scoreWeights);
+    confidenceScore = Math.min(100.0, Math.max(0.0, confidenceScore * mzPrecision));
+
+    var allStructuresUnknown = missingStructures >= totalMatches;
+    if (allStructuresUnknown) {
+      confidenceScore = Math.min(confidenceScore * UNKNOWN_STRUCTURE_PENALTY, UNKNOWN_STRUCTURE_CAP);
+    }
+    confidenceScore = Math.min(100.0, Math.max(0.0, confidenceScore));
+
+    var confidenceLabel, badgeColor;
+    if (allStructuresUnknown) {
+      badgeColor = confidenceCategory(confidenceScore)[1];
+      confidenceLabel = "Structure unknown";
+    } else {
+      var cat = confidenceCategory(confidenceScore);
+      confidenceLabel = cat[0]; badgeColor = cat[1];
+    }
+
+    // Candidate-structure cards for the detail panel: one per support group,
+    // sorted like the original app's grouped_detail_rows (count desc, then
+    // cosine desc), capped at 25.
+    var maxGroupCount = grouped.length ? Math.max.apply(null, grouped.map(function (g) { return g.count; })) : 0;
+    var maxGroupCosine = grouped.length ? Math.max.apply(null, grouped.map(function (g) { return g.max_cosine; })) : 0;
+    var cardGroups = grouped.slice(0, 25).map(function (g) {
+      var repRow = g.rows.slice().sort(function (a, b) { return b._cosine - a._cosine; })[0];
+      var compoundNames = {};
+      var libraryNames = {};
+      var libraryMatches = {};
+      var libraryMatchOrder = [];
+      g.rows.forEach(function (r) {
+        if (r._compound) compoundNames[r._compound] = true;
+        if (r._library_name) libraryNames[r._library_name] = true;
+        if (!r._library_usi) return;
+        if (!libraryMatches.hasOwnProperty(r._library_usi)) {
+          libraryMatches[r._library_usi] = {
+            library_usi: r._library_usi, adduct: r._adduct, mz_error_ppm: r._abs_ppm,
+            cosine: r._cosine, library_name: r._library_name, compound_name: r._compound
+          };
+          libraryMatchOrder.push(r._library_usi);
+        } else if (!libraryMatches[r._library_usi].adduct && r._adduct) {
+          libraryMatches[r._library_usi].adduct = r._adduct;
+        }
+      });
+      return {
+        support_group_key: g._support_group_key,
+        count: g.count,
+        max_cosine: g.max_cosine,
+        is_most_matches: g.count === maxGroupCount && maxGroupCount > 0,
+        is_top_cosine: Math.abs(g.max_cosine - maxGroupCosine) < 1e-9,
+        compound: Object.keys(compoundNames)[0] || "Unknown compound",
+        compound_names: Object.keys(compoundNames),
+        library_names: Object.keys(libraryNames),
+        smiles: repRow._smiles, inchikey: repRow._inchikey, inchi: repRow._inchi,
+        library_matches: libraryMatchOrder.map(function (usi) { return libraryMatches[usi]; })
+      };
+    });
+
+    var precursorMz = null;
+    if (precursorMzCol) {
+      var mzVals = scanRows.map(function (r) { return toNum(r[precursorMzCol], NaN); }).filter(function (v) { return !isNaN(v); });
+      if (mzVals.length) precursorMz = Math.round(mzVals[0] * 10000) / 10000;
+    }
+
+    summary.push({
+      scan: scan,
+      retention_time: retentionTimes.hasOwnProperty(scan) ? Math.round(retentionTimes[scan] * 100) / 100 : null,
+      precursor_mz: precursorMz,
+      top_compound: topCompound,
+      count_based_top_compound: countBasedTopCompound,
+      structure_key: structureKey,
+      support_group_key: supportGroupKey,
+      supporting_matches: best.count,
+      total_matches: totalMatches,
+      support_fraction: Math.round(supportFraction * 10000) / 10000,
+      missing_structures: missingStructures,
+      all_structures_unknown: allStructuresUnknown,
+      mean_cosine: Math.round(meanCosine * 10000) / 10000,
+      max_cosine: Math.round(maxCosine * 10000) / 10000,
+      cosine_consistency: Math.round(cosineConsistency * 10000) / 10000,
+      cosine_consistency_source: cosineConsistencySource,
+      tanimoto_score: Math.round(tanimotoScore * 10000) / 10000,
+      tanimoto_source: tanimotoSource,
+      shared_peaks: Math.round(rawSharedPeaks * 100) / 100,
+      shared_peaks_score: Math.round(sharedPeaksScore * 10000) / 10000,
+      shared_peaks_source: sharedPeaksSource,
+      query_peak_count: queryPeakCount,
+      library_diversity_score: Math.round(libraryDiversityScore * 10000) / 10000,
+      median_abs_ppm_error: isNaN(rawAbsPpm) ? null : Math.round(rawAbsPpm * 1000) / 1000,
+      mz_precision: Math.round(mzPrecision * 10000) / 10000,
+      confidence_score: Math.round(confidenceScore * 10) / 10,
+      confidence_label: confidenceLabel,
+      badge_color: badgeColor,
+      query_entropy: queryEntropy === null ? null : Math.round(queryEntropy * 1000) / 1000,
+      query_entropy_label: queryEntropyLabel,
+      top_cosine_overridden: topCosineOverridden,
+      top_cosine_compound: globalTopCompound,
+      query_usi: queryUsi,
+      _groups: cardGroups
+    });
+  });
+
+  summary.sort(function (a, b) {
+    if (b.confidence_score !== a.confidence_score) return b.confidence_score - a.confidence_score;
+    return b.supporting_matches - a.supporting_matches;
+  });
+  return summary;
+}
+
+// ============================================================================
+// Spectral entropy (bin/spectral_entropy_v2.py — single-spectrum, informational only)
+// ============================================================================
+function entropyLabel(S) {
+  if (S < 0.5) return "noisy / low quality";
+  if (S < 1.0) return "moderate quality";
+  if (S < 1.75) return "clean / good quality";
+  return "very diffuse / uniform";
+}
+
+// Peak cleaning matching ms_entropy.calculate_spectral_entropy(clean_spectrum=True):
+// drop <=0 intensity peaks, merge peaks within tolerance (keep highest), drop peaks
+// below noise_threshold * base peak, keep top max_peak_num, renormalize to sum=1.
+function cleanSpectrum(peaks, toleranceDa, noiseThreshold, maxPeakNum) {
+  var pts = peaks.filter(function (p) { return p[1] > 0; }).map(function (p) { return [p[0], p[1]]; });
+  pts.sort(function (a, b) { return a[0] - b[0]; });
+
+  // Merge peaks within tolerance, keeping the most intense in each cluster's m/z.
+  var merged = [];
+  for (var i = 0; i < pts.length; i++) {
+    if (merged.length && (pts[i][0] - merged[merged.length - 1][0]) <= toleranceDa) {
+      if (pts[i][1] > merged[merged.length - 1][1]) merged[merged.length - 1] = pts[i];
+    } else {
+      merged.push(pts[i]);
+    }
+  }
+
+  if (!merged.length) return [];
+  var maxIntensity = merged.reduce(function (m2, p) { return Math.max(m2, p[1]); }, 0);
+  if (maxIntensity <= 0) return [];
+  var filtered = merged.filter(function (p) { return p[1] >= noiseThreshold * maxIntensity; });
+  filtered.sort(function (a, b) { return b[1] - a[1]; });
+  if (filtered.length > maxPeakNum) filtered = filtered.slice(0, maxPeakNum);
+  filtered.sort(function (a, b) { return a[0] - b[0]; });
+
+  var sum = filtered.reduce(function (s, p) { return s + p[1]; }, 0);
+  if (sum <= 0) return [];
+  return filtered.map(function (p) { return [p[0], p[1] / sum]; });
+}
+function spectralEntropyForSpectrum(peaks, toleranceDa, noiseThreshold, maxPeakNum) {
+  var cleaned = cleanSpectrum(peaks, toleranceDa || DEFAULT_MS2_TOLERANCE_DA, noiseThreshold || DEFAULT_NOISE_THRESHOLD, maxPeakNum || DEFAULT_MAX_PEAK_NUM);
+  if (!cleaned.length) return 0.0;
+  var S = 0;
+  for (var i = 0; i < cleaned.length; i++) {
+    var p = cleaned[i][1];
+    if (p > 0) S -= p * Math.log(p);
+  }
+  return S;
+}
+
+// ============================================================================
+// MGF loader (bin/mgf_loader.py)
+// ============================================================================
+function parseMgf(text) {
+  var spectra = {};
+  var currentScan = null, currentPeaks = [];
+  var lines = text.split(/\r\n|\r|\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line) continue;
+    if (line === "BEGIN IONS") { currentScan = null; currentPeaks = []; }
+    else if (line === "END IONS") { if (currentScan !== null) spectra[currentScan] = currentPeaks; }
+    else if (line.indexOf("SCANS=") === 0) { currentScan = line.slice(6).trim(); }
+    else if (line.indexOf("=") === -1) {
+      var parts = line.split(/\s+/);
+      if (parts.length >= 2) {
+        var mz = parseFloat(parts[0]), inten = parseFloat(parts[1]);
+        if (isFinite(mz) && isFinite(inten)) currentPeaks.push([mz, inten]);
+      }
+    }
+  }
+  return spectra;
+}
+function filteredPeakCount(mgfIndex, scan) {
+  var peaks = mgfIndex[String(scan)];
+  if (!peaks || !peaks.length) return mgfIndex.hasOwnProperty(String(scan)) ? peaks.length : null;
+  var maxIntensity = peaks.reduce(function (m, p) { return Math.max(m, p[1]); }, 0);
+  if (maxIntensity <= 0) return peaks.length;
+  var filtered = peaks.filter(function (p) { return p[1] >= DEFAULT_NOISE_THRESHOLD * maxIntensity; });
+  if (filtered.length > DEFAULT_MAX_PEAK_NUM) filtered = filtered.slice(0, DEFAULT_MAX_PEAK_NUM);
+  return filtered.length;
+}
+function entropyFromMgfIndex(mgfIndex, scan) {
+  var peaks = mgfIndex[String(scan)];
+  if (!peaks || !peaks.length) return null;
+  var S = spectralEntropyForSpectrum(peaks, DEFAULT_MS2_TOLERANCE_DA, DEFAULT_NOISE_THRESHOLD, DEFAULT_MAX_PEAK_NUM);
+  return [Math.round(S * 1000) / 1000, entropyLabel(S)];
+}
+
+// ============================================================================
+// GNPS2 loader chain (bin/loader.py)
+// ============================================================================
+function fetchWithTimeout(url, opts, timeoutMs) {
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+  return fetch(url, Object.assign({}, opts, { signal: controller.signal })).finally(function () { clearTimeout(timer); });
+}
+
+function parseDelimited(text) {
+  var delim = text.indexOf("\t") !== -1 ? "\t" : ",";
+  var lines = text.split(/\r\n|\r|\n/).filter(function (l) { return l.length > 0; });
+  if (!lines.length) return [];
+  var header = lines[0].split(delim);
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    var cells = lines[i].split(delim);
+    var row = {};
+    for (var c = 0; c < header.length; c++) row[header[c]] = cells[c] !== undefined ? cells[c] : "";
+    rows.push(row);
+  }
+  return rows;
+}
+
+function fetchJsonView(taskId, viewName) {
+  var url = GNPS2_HOST + "/result?task=" + encodeURIComponent(taskId) + "&viewname=" + encodeURIComponent(viewName) + "&json=";
+  return fetchWithTimeout(url, {}, LOADER_TIMEOUT_MS).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.json();
+  }).then(function (payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && typeof payload === "object") {
+      var candidates = ["data", "results", "rows"];
+      for (var i = 0; i < candidates.length; i++) {
+        if (Array.isArray(payload[candidates[i]])) return payload[candidates[i]];
+      }
+      if (Object.keys(payload).length) return [payload];
+    }
+    return [];
+  });
+}
+function fetchResultFileTsv(taskId, relpath) {
+  var url = GNPS2_HOST + "/resultfile?task=" + encodeURIComponent(taskId) + "&file=" + encodeURIComponent(relpath);
+  return fetchWithTimeout(url, {}, LOADER_TIMEOUT_MS).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.text();
+  }).then(parseDelimited);
+}
+
+// bin/loader.py::_load_library_matches_cached — same loader order per workflow.
+function loadLibraryMatches(taskId, workflowChoice) {
+  workflowChoice = (workflowChoice || "auto").trim().toLowerCase();
+  var loaders = [];
+  if (workflowChoice === "librarysearch") {
+    loaders.push(["direct GNPS2 summarylist JSON view", function () { return fetchJsonView(taskId, "summarylist"); }]);
+  } else if (workflowChoice === "fbmn" || workflowChoice === "classic") {
+    // gnpsdata's fbmn/classic-specific loaders call task-type endpoints we
+    // cannot replicate 1:1 without the Python package; the "auto" JSON view
+    // plus taskresult fallbacks below cover the same underlying files.
+    loaders.push(["direct GNPS2 librarymatches JSON view", function () { return fetchJsonView(taskId, "librarymatches"); }]);
+  } else {
+    loaders.push(["direct GNPS2 librarymatches JSON view", function () { return fetchJsonView(taskId, "librarymatches"); }]);
+  }
+  loaders.push(["taskresult merged_results_with_gnps.tsv", function () { return fetchResultFileTsv(taskId, "nf_output/library/merged_results_with_gnps.tsv"); }]);
+  loaders.push(["taskresult librarymatches view", function () { return fetchJsonView(taskId, "librarymatches"); }]);
+
+  var errors = [];
+  function tryNext(i) {
+    if (i >= loaders.length) {
+      throw new Error("Could not load library matches for this task ID. Please verify the task is finished and has library matches." + (errors.length ? " | " + errors.slice(-3).join(" | ") : ""));
+    }
+    var name = loaders[i][0], fn = loaders[i][1];
+    return fn().then(function (rows) {
+      if (rows && rows.length) return rows;
+      errors.push(name + ": empty");
+      return tryNext(i + 1);
+    }).catch(function (err) {
+      errors.push(name + ": " + err.message);
+      return tryNext(i + 1);
+    });
+  }
+  return tryNext(0);
+}
+
+// bin/loader.py::load_retention_times — FBMN feature table only; other
+// workflows have no quant table, so a fetch failure here is expected and silent.
+function loadRetentionTimes(taskId) {
+  var url = GNPS2_HOST + "/resultfile?task=" + encodeURIComponent(taskId) + "&file=" + encodeURIComponent("nf_output/clustering/featuretable_reformated.csv");
+  return fetchWithTimeout(url, {}, LOADER_TIMEOUT_MS).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.text();
+  }).then(function (text) {
+    var rows = parseDelimited(text);
+    var map = {};
+    rows.forEach(function (row) {
+      var scan = toText(row["row ID"]);
+      var rt = toNum(row["row retention time"], NaN);
+      if (scan && !map.hasOwnProperty(scan) && isFinite(rt)) map[scan] = rt;
+    });
+    return map;
+  }).catch(function () { return {}; });
+}
+
+function loadTaskMgf(taskId) {
+  var url = GNPS2_HOST + "/resultfile?task=" + encodeURIComponent(taskId) + "&file=" + encodeURIComponent("inputspectra");
+  // The exact MGF filename is task-specific; try the common GNPS2 clustering
+  // output location that pairs with the default query-USI construction.
+  var candidateUrl = GNPS2_HOST + "/resultfile?task=" + encodeURIComponent(taskId) + "&file=" + encodeURIComponent("nf_output/clustering/spectra_reformatted.mgf");
+  return fetchWithTimeout(candidateUrl, {}, LOADER_TIMEOUT_MS).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.text();
+  }).then(parseMgf).catch(function () { return null; });
+}
+
+// ============================================================================
+// UI wiring
+// ============================================================================
+var statusEl = document.getElementById("status");
+function setStatus(msg, tone) {
+  statusEl.className = tone || "info";
+  statusEl.textContent = msg;
+}
+
+var resultsCard = document.getElementById("results-card");
+var resultsWrap = document.getElementById("results-wrap");
+var resultsBody = document.querySelector("#results-table tbody");
+var currentSummary = [];
+var currentSort = { key: "confidence_score", dir: -1 };
+
+// TODO (see webapp/TODO.md): the original Dash table also flags repeated
+// annotations across scans and marks top-cosine-override rows with icons;
+// this table doesn't render either yet, though both fields are already
+// computed (top_cosine_overridden / top_cosine_compound per row).
+function renderTable() {
+  var rows = currentSummary.slice().sort(function (a, b) {
+    var av = a[currentSort.key], bv = b[currentSort.key];
+    if (av === bv) return 0;
+    if (typeof av === "string") return currentSort.dir * av.localeCompare(bv);
+    return currentSort.dir * ((av > bv) ? 1 : -1);
+  });
+  resultsBody.innerHTML = "";
+  rows.forEach(function (r) {
+    var tr = document.createElement("tr");
+    tr.className = "clickable";
+    function td(text, cls) {
+      var el = document.createElement("td");
+      if (cls) el.className = cls;
+      el.textContent = text === null || text === undefined ? "" : text;
+      tr.appendChild(el);
+    }
+    td(r.scan, "num");
+    td(r.retention_time === null || r.retention_time === undefined ? "N/A" : r.retention_time.toFixed(2), "num mono");
+    td(r.precursor_mz === null ? "" : r.precursor_mz.toFixed(4), "num mono");
+    var compoundTd = document.createElement("td");
+    compoundTd.className = "compound-cell";
+    compoundTd.textContent = r.top_compound;
+    compoundTd.title = r.top_compound;
+    tr.appendChild(compoundTd);
+    td(r.confidence_score.toFixed(1), "num mono");
+    var labelTd = document.createElement("td");
+    var badge = document.createElement("span");
+    badge.className = "badge " + r.badge_color;
+    badge.textContent = r.confidence_label;
+    labelTd.appendChild(badge);
+    tr.appendChild(labelTd);
+    td(r.supporting_matches, "num");
+    td(r.total_matches, "num");
+    td(r.max_cosine.toFixed(3), "num mono");
+    td(r.tanimoto_score.toFixed(3), "num mono");
+    td(r.query_entropy === null ? "N/A" : r.query_entropy.toFixed(3), "num mono");
+    resultsBody.appendChild(tr);
+  });
+}
+document.querySelectorAll("#results-table th").forEach(function (th) {
+  th.addEventListener("click", function () {
+    var key = th.getAttribute("data-key");
+    if (currentSort.key === key) currentSort.dir *= -1; else { currentSort.key = key; currentSort.dir = -1; }
+    renderTable();
+  });
+});
+resultsBody.addEventListener("click", function (e) {
+  var tr = e.target.closest("tr");
+  if (!tr) return;
+  var idx = Array.prototype.indexOf.call(resultsBody.children, tr);
+  var rows = currentSummary.slice().sort(function (a, b) {
+    var av = a[currentSort.key], bv = b[currentSort.key];
+    if (av === bv) return 0;
+    if (typeof av === "string") return currentSort.dir * av.localeCompare(bv);
+    return currentSort.dir * ((av > bv) ? 1 : -1);
+  });
+  if (rows[idx]) openDetail(rows[idx]);
+});
+
+// ── Detail panel (ported from templates/msms_reliability_table.html) ──
+var detailCard = document.getElementById("detail-card");
+var currentTaskId = "";
+
+function describeArc(cx, cy, r, startDeg, endDeg) {
+  function toRad(d) { return (d * Math.PI) / 180; }
+  var s = { x: cx + r * Math.cos(toRad(startDeg)), y: cy + r * Math.sin(toRad(startDeg)) };
+  var e = { x: cx + r * Math.cos(toRad(endDeg)), y: cy + r * Math.sin(toRad(endDeg)) };
+  var large = (endDeg - startDeg) > 180 ? 1 : 0;
+  return "M " + s.x + " " + s.y + " A " + r + " " + r + " 0 " + large + " 1 " + e.x + " " + e.y;
+}
+function drawGauge(score, color) {
+  var svg = document.getElementById("gauge-svg");
+  var cx = 70, cy = 78, r = 52;
+  var startDeg = 210, totalSweep = 240;
+  var endDeg = startDeg + totalSweep * (score / 100);
+  svg.innerHTML =
+    '<path d="' + describeArc(cx, cy, r, startDeg, startDeg + totalSweep) + '" fill="none" stroke="#dce6ef" stroke-width="10" stroke-linecap="round"/>' +
+    '<path d="' + describeArc(cx, cy, r, startDeg, endDeg) + '" fill="none" stroke="' + color + '" stroke-width="10" stroke-linecap="round"/>';
+}
+function colorForBadge(badge) {
+  if (badge === "success") return getComputedStyle(document.documentElement).getPropertyValue("--ok").trim();
+  if (badge === "warning") return getComputedStyle(document.documentElement).getPropertyValue("--warn").trim();
+  return getComputedStyle(document.documentElement).getPropertyValue("--err").trim();
+}
+function barColor(v) {
+  if (v >= 0.75) return getComputedStyle(document.documentElement).getPropertyValue("--ok").trim();
+  if (v >= 0.45) return getComputedStyle(document.documentElement).getPropertyValue("--warn").trim();
+  return getComputedStyle(document.documentElement).getPropertyValue("--err").trim();
+}
+
+// Mirrors DEFAULT_SCORE_WEIGHTS in bin/constants.py / scorer.py.
+var DETAIL_COMPONENTS = [
+  {
+    key: "structure_agreement", label: "Structure agreement", weight: DEFAULT_SCORE_WEIGHTS.structure_agreement,
+    norm: function (r) { return r.support_fraction; },
+    formula: "Bayesian-shrunk supporting/total hits",
+    raw: function (r) { return r.supporting_matches + " / " + r.total_matches + " supporting hits"; },
+    secondary: function (r) { return "structure key: " + r.structure_key; }
+  },
+  {
+    key: "tanimoto", label: "Structural (Tanimoto/WCRS)", weight: DEFAULT_SCORE_WEIGHTS.tanimoto,
+    norm: function (r) { return r.tanimoto_score; },
+    formula: function (r) { return r.tanimoto_source; },
+    raw: function (r) { return r.tanimoto_score.toFixed(3); },
+    secondary: function (r) { return ""; }
+  },
+  {
+    key: "cosine_consistency", label: "Cosine consistency", weight: DEFAULT_SCORE_WEIGHTS.cosine_consistency,
+    norm: function (r) { return r.cosine_consistency; },
+    formula: function (r) { return r.cosine_consistency_source; },
+    raw: function (r) { return r.cosine_consistency.toFixed(3); },
+    secondary: function (r) { return "mean cosine: " + r.mean_cosine.toFixed(3); }
+  },
+  {
+    key: "max_cosine", label: "Best cosine score", weight: DEFAULT_SCORE_WEIGHTS.max_cosine,
+    norm: function (r) { return r.max_cosine; },
+    formula: "strongest library hit",
+    raw: function (r) { return r.max_cosine.toFixed(3); },
+    secondary: function (r) { return ""; }
+  },
+  {
+    key: "shared_peaks", label: "Shared peaks", weight: DEFAULT_SCORE_WEIGHTS.shared_peaks,
+    norm: function (r) { return r.shared_peaks_score; },
+    formula: function (r) { return r.shared_peaks_source; },
+    raw: function (r) { return r.shared_peaks.toFixed(2) + " shared peaks" + (r.query_peak_count ? " / " + r.query_peak_count + " query peaks" : ""); },
+    secondary: function (r) { return ""; }
+  },
+  {
+    key: "library_diversity", label: "Library diversity", weight: DEFAULT_SCORE_WEIGHTS.library_diversity,
+    norm: function (r) { return r.library_diversity_score; },
+    formula: "unique source libraries, soft-capped at " + K_LIBRARY_DIVERSITY,
+    raw: function (r) { return r.library_diversity_score.toFixed(3); },
+    secondary: function (r) { return ""; }
+  }
+];
+
+// bin/normalizer.py-equivalent mirror-plot URL (matches components.py::_build_mirror_plot_link)
+function buildMirrorPlotLink(queryUsi, libraryUsi) {
+  libraryUsi = normalizeLibraryUsi(libraryUsi);
+  if (!queryUsi || !libraryUsi) return "";
+  var params = new URLSearchParams({ usi1: queryUsi, usi2: libraryUsi });
+  return "https://metabolomics-usi.gnps2.org/dashinterface/?" + params.toString();
+}
+
+// Inline 2D structure SVG via RDKit.js (replaces the Python app's RDKit-rendered PNG).
+var _molSvgCache = {};
+function molSvgFor(smiles, inchi) {
+  var cacheKey = (smiles || "") + "\u0001" + (inchi || "");
+  if (_molSvgCache.hasOwnProperty(cacheKey)) return _molSvgCache[cacheKey];
+  var svg = null;
+  var mol = smiles ? getMolFromSmiles(smiles) : null;
+  if (!mol && inchi) mol = getMolFromInchi(inchi);
+  if (mol) {
+    try { svg = mol.get_svg(); } catch (e) { svg = null; }
+    mol.delete();
+  }
+  _molSvgCache[cacheKey] = svg;
+  return svg;
+}
+
+function renderGroupsGrid(row) {
+  var grid = document.getElementById("groups-grid");
+  grid.innerHTML = "";
+  (row._groups || []).forEach(function (g) {
+    var card = document.createElement("div");
+    card.className = "group-card clickable";
+    card.addEventListener("click", function () { openStructureModal(g, row); });
+
+    var molDiv = document.createElement("div");
+    molDiv.className = "group-mol";
+    var svg = molSvgFor(g.smiles, g.inchi);
+    if (svg) {
+      molDiv.innerHTML = svg;
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "group-mol-placeholder";
+      ph.textContent = "No structure available";
+      molDiv.appendChild(ph);
+    }
+    card.appendChild(molDiv);
+
+    var title = document.createElement("div");
+    title.className = "group-title";
+    title.textContent = g.compound;
+    title.title = g.compound;
+    card.appendChild(title);
+
+    var meta = document.createElement("div");
+    meta.className = "group-meta";
+    meta.textContent = g.count + " hit" + (g.count === 1 ? "" : "s") + " · max cosine " + g.max_cosine.toFixed(3) +
+      (g.support_group_key === row.support_group_key ? " · winning group" : "");
+    card.appendChild(meta);
+
+    if (g.inchikey) {
+      var keyLine = document.createElement("div");
+      keyLine.className = "group-meta";
+      keyLine.textContent = g.inchikey;
+      card.appendChild(keyLine);
+    }
+
+    var links = document.createElement("div");
+    links.className = "group-links";
+    g.library_matches.slice(0, 5).forEach(function (m, i) {
+      var a = document.createElement("a");
+      a.href = buildMirrorPlotLink(row.query_usi, m.library_usi);
+      a.target = "_blank";
+      a.rel = "noopener";
+      var ppmText = isFinite(m.mz_error_ppm) ? m.mz_error_ppm.toFixed(2) + " ppm" : "";
+      a.textContent = "Mirror plot " + (i + 1) + (m.adduct ? " (" + m.adduct + (ppmText ? ", " + ppmText : "") + ")" : "");
+      links.appendChild(a);
+    });
+    if (g.library_matches.length > 5) {
+      var more = document.createElement("div");
+      more.className = "group-meta";
+      more.textContent = "+" + (g.library_matches.length - 5) + " more library match(es)";
+      links.appendChild(more);
+    }
+    card.appendChild(links);
+
+    grid.appendChild(card);
+  });
+}
+
+// "Matched Compound Structures" modal (⇔ components.py's Matched Compound
+// Structures table in _build_detail_panel) — fuller per-group detail than the
+// compact grid card: badges, InChIKey, full structure text, all alternative
+// compound names, all source libraries, and every mirror-plot link (the card
+// itself caps at 5).
+function openStructureModal(g, row) {
+  document.getElementById("modal-compound-name").textContent = g.compound;
+
+  var badges = document.getElementById("modal-badges");
+  badges.innerHTML = "";
+  function addBadge(text, cls) {
+    var b = document.createElement("span");
+    b.className = "badge " + cls;
+    b.textContent = text;
+    badges.appendChild(b);
+  }
+  addBadge(g.count + " match" + (g.count === 1 ? "" : "es"), "secondary");
+  if (g.support_group_key === row.support_group_key) addBadge("Winning group", "success");
+  if (g.is_most_matches) addBadge("Most matches", "success");
+  if (g.is_top_cosine) addBadge("Top cosine", "info-tone");
+
+  var molDiv = document.getElementById("modal-mol");
+  var svg = molSvgFor(g.smiles, g.inchi);
+  molDiv.innerHTML = svg ? svg : '<div class="group-mol-placeholder">No structure available</div>';
+
+  document.getElementById("modal-best-cosine").textContent = g.max_cosine.toFixed(4);
+  document.getElementById("modal-inchikey").textContent = g.inchikey || "InChIKey unavailable";
+
+  var structureText = g.smiles || g.inchi || "";
+  document.getElementById("modal-structure-text").textContent = structureText || "SMILES/InChI unavailable";
+
+  var otherNames = (g.compound_names || []).filter(function (n) { return n !== g.compound; });
+  document.getElementById("modal-aliases").textContent = otherNames.length
+    ? "Also annotated as: " + otherNames.join(", ")
+    : "Single compound label in this group";
+
+  document.getElementById("modal-libraries").textContent = (g.library_names && g.library_names.length)
+    ? g.library_names.join(", ")
+    : "Library name unavailable";
+
+  var linksLabel = document.getElementById("modal-links-label");
+  var linksDiv = document.getElementById("modal-links");
+  linksDiv.innerHTML = "";
+  var matches = g.library_matches || [];
+  linksLabel.textContent = matches.length + " unique library match" + (matches.length === 1 ? "" : "es");
+  if (!matches.length) {
+    var none = document.createElement("div");
+    none.className = "group-meta";
+    none.textContent = "Mirror plot links unavailable for this structure";
+    linksDiv.appendChild(none);
+  } else {
+    matches.forEach(function (m, i) {
+      var a = document.createElement("a");
+      a.href = buildMirrorPlotLink(row.query_usi, m.library_usi);
+      a.target = "_blank";
+      a.rel = "noopener";
+      var ppmText = isFinite(m.mz_error_ppm) ? m.mz_error_ppm.toFixed(2) + " ppm" : "";
+      var parts = [m.adduct, ppmText].filter(Boolean).join(", ");
+      a.textContent = "Mirror plot " + (i + 1) + (parts ? " (" + parts + ")" : "") + (m.library_name ? " — " + m.library_name : "");
+      linksDiv.appendChild(a);
+    });
+  }
+
+  document.getElementById("structure-modal-overlay").classList.add("open");
+}
+function closeStructureModal() {
+  document.getElementById("structure-modal-overlay").classList.remove("open");
+}
+document.getElementById("structure-modal-close").addEventListener("click", closeStructureModal);
+document.getElementById("structure-modal-overlay").addEventListener("click", function (e) {
+  if (e.target.id === "structure-modal-overlay") closeStructureModal();
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") closeStructureModal();
+});
+
+function openDetail(row) {
+  resultsCard.style.display = "none";
+  detailCard.style.display = "block";
+
+  var color = colorForBadge(row.badge_color);
+  drawGauge(row.confidence_score, color);
+  document.getElementById("gauge-score").textContent = row.confidence_score.toFixed(1);
+  document.getElementById("gauge-score").style.color = color;
+  var badge = document.getElementById("gauge-badge");
+  badge.textContent = row.confidence_label;
+  badge.style.color = color;
+  badge.style.borderColor = color;
+  document.getElementById("compound-name").textContent = row.top_compound;
+  document.getElementById("structure-key").textContent = "Structure key: " + row.structure_key + (row.top_cosine_overridden ? " (top cosine hit: " + row.top_cosine_compound + ")" : "");
+
+  document.getElementById("d-scan").textContent = row.scan;
+  document.getElementById("d-rt").textContent = row.retention_time === null ? "N/A" : row.retention_time.toFixed(2);
+  document.getElementById("d-mz").textContent = row.precursor_mz === null ? "N/A" : row.precursor_mz.toFixed(4);
+  document.getElementById("d-support").textContent = row.supporting_matches + " / " + row.total_matches;
+  document.getElementById("d-entropy").textContent = row.query_entropy === null ? "N/A" : row.query_entropy.toFixed(3) + " (" + row.query_entropy_label + ")";
+
+  var unknownNotice = document.getElementById("d-unknown-notice");
+  if (row.all_structures_unknown) {
+    unknownNotice.style.display = "flex";
+    document.getElementById("d-penalty").textContent = UNKNOWN_STRUCTURE_PENALTY;
+    document.getElementById("d-cap").textContent = UNKNOWN_STRUCTURE_CAP;
+  } else {
+    unknownNotice.style.display = "none";
+  }
+
+  var tbody = document.getElementById("detail-tbody");
+  tbody.innerHTML = "";
+  DETAIL_COMPONENTS.forEach(function (c) {
+    var norm = c.norm(row);
+    var contrib = norm * c.weight * 100;
+    var pct = Math.round(norm * 100);
+    var col = barColor(norm);
+    var formula = typeof c.formula === "function" ? c.formula(row) : c.formula;
+    var tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td class="td-component"><strong>' + c.label + '</strong><span>' + formula + '</span></td>' +
+      '<td class="td-weight">' + Math.round(c.weight * 100) + '%</td>' +
+      '<td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:' + pct + '%;background:' + col + ';"></div></div><span class="bar-val" style="color:' + col + '">' + norm.toFixed(3) + '</span></div></td>' +
+      '<td><span class="td-raw-primary">' + c.raw(row) + '</span><span class="td-raw-secondary">' + c.secondary(row) + '</span></td>' +
+      '<td class="td-contrib" style="color:' + col + '">' + contrib.toFixed(1) + '</td>';
+    tbody.appendChild(tr);
+  });
+
+  var gateRow = document.createElement("tr");
+  gateRow.innerHTML =
+    '<td class="td-component"><strong>MZ precision gate</strong><span>&plusmn;' + PPM_TOLERANCE + ' ppm tolerance</span></td>' +
+    '<td class="td-weight">&times;</td><td></td>' +
+    '<td><span class="td-raw-primary">' + (row.median_abs_ppm_error === null ? "N/A" : row.median_abs_ppm_error.toFixed(3) + " ppm") + '</span></td>' +
+    '<td class="td-contrib">' + row.mz_precision.toFixed(3) + '</td>';
+  tbody.appendChild(gateRow);
+
+  if (row.all_structures_unknown) {
+    var penaltyRow = document.createElement("tr");
+    penaltyRow.innerHTML =
+      '<td class="td-component"><strong>Unknown-structure penalty</strong><span>no SMILES/InChIKey on any hit</span></td>' +
+      '<td class="td-weight">&times;</td><td></td>' +
+      '<td><span class="td-raw-primary">cap ' + UNKNOWN_STRUCTURE_CAP + '</span></td>' +
+      '<td class="td-contrib">' + UNKNOWN_STRUCTURE_PENALTY + '</td>';
+    tbody.appendChild(penaltyRow);
+  }
+
+  var totalRow = document.createElement("tr");
+  totalRow.className = "total-row";
+  totalRow.innerHTML =
+    '<td><span class="total-label">Composite confidence score</span></td><td></td><td></td><td></td>' +
+    '<td class="total-score" style="color:' + color + '">' + row.confidence_score.toFixed(1) + '</td>';
+  tbody.appendChild(totalRow);
+
+  renderGroupsGrid(row);
+
+  var params = new URLSearchParams(window.location.search);
+  params.set("scan", row.scan);
+  params.set("detail", "1");
+  history.replaceState(null, "", "?" + params.toString());
+}
+
+document.getElementById("detail-back").addEventListener("click", function () {
+  detailCard.style.display = "none";
+  resultsCard.style.display = "";
+  var params = new URLSearchParams(window.location.search);
+  params.delete("scan");
+  params.delete("detail");
+  history.replaceState(null, "", window.location.pathname + (params.toString() ? "?" + params.toString() : ""));
+});
+
+document.getElementById("download-btn").addEventListener("click", function () {
+  if (!currentSummary.length) return;
+  var cols = ["scan", "retention_time", "precursor_mz", "top_compound", "confidence_score", "confidence_label",
+    "supporting_matches", "total_matches", "support_fraction", "structure_key", "max_cosine", "mean_cosine",
+    "cosine_consistency", "tanimoto_score", "tanimoto_source", "shared_peaks", "shared_peaks_score",
+    "library_diversity_score", "median_abs_ppm_error", "mz_precision", "query_entropy", "query_entropy_label",
+    "top_cosine_overridden", "top_cosine_compound", "query_usi"];
+  function csvCell(v) {
+    if (v === null || v === undefined) return "";
+    var s = String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  var lines = [cols.join(",")];
+  currentSummary.forEach(function (r) { lines.push(cols.map(function (c) { return csvCell(r[c]); }).join(",")); });
+  var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "gnps2_annex_" + (currentTaskId || "scores") + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+var loadBtn = document.getElementById("load-btn");
+var exampleBtn = document.getElementById("example-btn");
+var taskInput = document.getElementById("task-id");
+var workflowSelect = document.getElementById("workflow");
+
+function runScoring(taskId, workflowChoice) {
+  loadBtn.disabled = true;
+  currentTaskId = taskId;
+  resultsCard.style.display = "none";
+  resultsWrap.style.display = "none";
+  detailCard.style.display = "none";
+  setStatus("Loading RDKit.js…", "info");
+
+  var rdkitReady = RDKitMod ? Promise.resolve(RDKitMod) : loadRDKit();
+
+  rdkitReady.then(function () {
+    setStatus("Fetching library matches for task " + taskId + "…", "info");
+    return loadLibraryMatches(taskId, workflowChoice);
+  }).then(function (rawRows) {
+    setStatus("Loaded " + rawRows.length + " library match rows — normalizing structures…", "info");
+    var normalized = normalizeLibraryMatchesTable(rawRows);
+    var needInchiLookup = normalized.filter(function (r) { return !isValidField(r.Smiles) && isValidField(r.INCHI); }).length;
+    var derivePromise = needInchiLookup
+      ? deriveSmilesFromInchi(normalized, function (done, total) {
+          setStatus("Resolving " + total + " structure(s) missing SMILES via PubChem (" + done + "/" + total + ")…", "info");
+        }).then(function (result) {
+          if (result.resolved) setStatus("Resolved " + result.resolved + "/" + result.attempted + " missing structure(s) via PubChem. Scoring…", "info");
+        })
+      : Promise.resolve();
+    return derivePromise.then(function () { return normalized; });
+  }).then(function (normalized) {
+    setStatus("Loading query spectra (for entropy) and retention times, then scoring…", "info");
+    return Promise.all([loadTaskMgf(taskId), loadRetentionTimes(taskId)]).then(function (results) {
+      var mgfIndex = results[0], retentionTimes = results[1];
+      var summary = computeScanLevelConfidence(normalized, {
+        taskId: taskId, workflowChoice: workflowChoice, mgfIndex: mgfIndex, retentionTimes: retentionTimes
+      });
+      return summary;
+    });
+  }).then(function (summary) {
+    currentSummary = summary;
+    if (!summary.length) {
+      setStatus("No scans could be scored for this task.", "warn");
+      return;
+    }
+    setStatus("Scored " + summary.length + " scan(s).", "ok");
+    resultsCard.style.display = "";
+    resultsWrap.style.display = "block";
+    renderTable();
+
+    var params = new URLSearchParams(window.location.search);
+    if (params.get("detail") === "1" && params.get("scan")) {
+      var wanted = String(params.get("scan"));
+      var match = summary.filter(function (r) { return String(r.scan) === wanted; })[0];
+      if (match) openDetail(match);
+    }
+  }).catch(function (err) {
+    setStatus("Error: " + err.message, "err");
+    console.error(err);
+  }).finally(function () {
+    loadBtn.disabled = false;
+  });
+}
+
+loadBtn.addEventListener("click", function () {
+  var taskId = taskInput.value.trim();
+  if (!taskId) { setStatus("Enter a GNPS2 task ID first.", "warn"); return; }
+  runScoring(taskId, workflowSelect.value);
+});
+exampleBtn.addEventListener("click", function () {
+  taskInput.value = "b22ff1bc41624e29a28cf6e12fe17ad5";
+  workflowSelect.value = "fbmn";
+  runScoring(taskInput.value, workflowSelect.value);
+});
+
+// Deep-link support: ?task=...&workflow=...
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var task = params.get("task");
+  if (task) {
+    taskInput.value = task;
+    var wf = params.get("workflow");
+    if (wf) workflowSelect.value = wf;
+    runScoring(task, workflowSelect.value);
+  }
+})();
+</script>
+</body>
+</html>
