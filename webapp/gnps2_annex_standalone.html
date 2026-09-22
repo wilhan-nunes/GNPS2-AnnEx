@@ -126,7 +126,7 @@
   .msms-detail .score-layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
   .msms-detail .gauge-card, .msms-detail .table-card { background: #fff; border: 1px solid var(--border2); border-radius: 10px; }
   .msms-detail .gauge-card { padding: 22px 18px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  .msms-detail .gauge-svg { width: 140px; height: 110px; }
+  .msms-detail .gauge-svg { width: 140px; height: 140px; }
   .msms-detail .gauge-score { font-family: var(--mono); font-size: 34px; font-weight: 700; line-height: 1; }
   .msms-detail .gauge-sublabel { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; text-align: center; }
   .msms-detail .gauge-badge { padding: 4px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid; }
@@ -310,7 +310,7 @@
 
     <div class="score-layout">
       <div class="gauge-card">
-        <svg class="gauge-svg" viewBox="0 0 140 110" id="gauge-svg"></svg>
+        <svg class="gauge-svg" viewBox="0 0 140 140" id="gauge-svg"></svg>
         <div class="gauge-score" id="gauge-score">—</div>
         <div class="gauge-sublabel">composite confidence score</div>
         <div class="gauge-badge" id="gauge-badge">—</div>
@@ -2059,7 +2059,10 @@ function describeArc(cx, cy, r, startDeg, endDeg) {
 function drawGauge(score, color) {
   var svg = document.getElementById("gauge-svg");
   var cx = 70, cy = 78, r = 52;
-  var startDeg = 210, totalSweep = 240;
+  // 0deg=3 o'clock, 90deg=6 o'clock (bottom), clockwise. A 240deg sweep
+  // starting at 150deg ends at 30deg, leaving a 120deg gap centered on the
+  // bottom (60deg on each side of 90deg) instead of an off-center gap.
+  var startDeg = 150, totalSweep = 240;
   var endDeg = startDeg + totalSweep * (score / 100);
   svg.innerHTML =
     '<path d="' + describeArc(cx, cy, r, startDeg, startDeg + totalSweep) + '" fill="none" stroke="#dce6ef" stroke-width="10" stroke-linecap="round"/>' +
