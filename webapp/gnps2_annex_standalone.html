@@ -85,7 +85,17 @@
   #status.err  { display: block; background: #fdeaec; color: var(--err); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
-  #results-table td.compound-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #results-table { table-layout: fixed; width: 977px; }
+  #results-table td.compound-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tr.filter-row th { position: sticky; top: 29px; background: var(--card); padding: 4px 6px; }
+  tr.filter-row input, tr.filter-row select {
+    width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px;
+    border: 1px solid var(--line); border-radius: 4px; font-family: inherit;
+  }
+  tr.filter-row input.active, tr.filter-row select.active { border-color: var(--accent); background: var(--accent-bg); }
+  #filter-summary { font-size: 12px; color: var(--muted); padding: 8px 2px 0; display: none; }
+  #filter-summary.visible { display: flex; align-items: center; gap: 10px; }
+  #filter-summary button { padding: 3px 10px; font-size: 12px; }
   th { cursor: pointer; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--card); }
   tbody tr:hover { background: var(--accent-bg); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
@@ -225,6 +235,19 @@
     <p class="sub" style="margin:-6px 0 14px;">Click a row for the full metric breakdown. <button id="download-btn" class="secondary" type="button" style="margin-left:8px;">Download CSV</button></p>
     <div id="results-wrap">
       <table id="results-table">
+        <colgroup>
+          <col style="width:60px">
+          <col style="width:62px">
+          <col style="width:95px">
+          <col style="width:230px">
+          <col style="width:58px">
+          <col style="width:150px">
+          <col style="width:58px">
+          <col style="width:52px">
+          <col style="width:78px">
+          <col style="width:72px">
+          <col style="width:62px">
+        </colgroup>
         <thead>
           <tr>
             <th data-key="scan">Scan</th>
@@ -239,9 +262,34 @@
             <th data-key="tanimoto_score">Tanimoto</th>
             <th data-key="query_entropy">Entropy</th>
           </tr>
+          <tr id="filter-row" class="filter-row">
+            <th><input type="text" class="col-filter" data-key="scan" placeholder=">=100" title="e.g. >=100"></th>
+            <th><input type="text" class="col-filter" data-key="retention_time" placeholder="<5" title="e.g. <5"></th>
+            <th><input type="text" class="col-filter" data-key="precursor_mz" placeholder=">300" title="e.g. >300"></th>
+            <th><input type="text" class="col-filter" data-key="top_compound" placeholder="search…" title="search compound name"></th>
+            <th><input type="text" class="col-filter" data-key="confidence_score" placeholder=">=80" title="e.g. >=80"></th>
+            <th>
+              <select class="col-filter" data-key="confidence_label">
+                <option value="">All</option>
+                <option value="Consistent evidence">Consistent evidence</option>
+                <option value="Inconclusive">Inconclusive</option>
+                <option value="Inconsistent evidence">Inconsistent evidence</option>
+                <option value="Structure unknown">Structure unknown</option>
+              </select>
+            </th>
+            <th><input type="text" class="col-filter" data-key="supporting_matches" placeholder=""></th>
+            <th><input type="text" class="col-filter" data-key="total_matches" placeholder=""></th>
+            <th><input type="text" class="col-filter" data-key="max_cosine" placeholder=">=0.9" title="e.g. >=0.9"></th>
+            <th><input type="text" class="col-filter" data-key="tanimoto_score" placeholder=""></th>
+            <th><input type="text" class="col-filter" data-key="query_entropy" placeholder=""></th>
+          </tr>
         </thead>
         <tbody></tbody>
       </table>
+      <div id="filter-summary" class="filter-summary">
+        <span id="filter-summary-text"></span>
+        <button id="clear-filters-btn" class="secondary" type="button">Clear filters</button>
+      </div>
     </div>
   </div>
 
@@ -1843,17 +1891,103 @@ var resultsBody = document.querySelector("#results-table tbody");
 var currentSummary = [];
 var currentSort = { key: "confidence_score", dir: -1 };
 
+// ── Per-column filtering ────────────────────────────────────────────────
+var currentFilters = {}; // key -> raw filter text
+var NUMERIC_FILTER_KEYS = {
+  scan: 1, retention_time: 1, precursor_mz: 1, confidence_score: 1,
+  supporting_matches: 1, total_matches: 1, max_cosine: 1, tanimoto_score: 1, query_entropy: 1
+};
+
+function formatCellValue(key, r) {
+  switch (key) {
+    case "scan": return String(r.scan);
+    case "retention_time": return r.retention_time === null || r.retention_time === undefined ? "N/A" : r.retention_time.toFixed(2);
+    case "precursor_mz": return r.precursor_mz === null ? "" : r.precursor_mz.toFixed(4);
+    case "top_compound": return r.top_compound || "";
+    case "confidence_score": return r.confidence_score.toFixed(1);
+    case "confidence_label": return r.confidence_label || "";
+    case "supporting_matches": return String(r.supporting_matches);
+    case "total_matches": return String(r.total_matches);
+    case "max_cosine": return r.max_cosine.toFixed(3);
+    case "tanimoto_score": return r.tanimoto_score.toFixed(3);
+    case "query_entropy": return r.query_entropy === null ? "N/A" : r.query_entropy.toFixed(3);
+    default: return "";
+  }
+}
+
+// Numeric columns accept an optional comparison operator (>=, <=, >, <, =)
+// followed by a number, e.g. ">=80" or "<5"; with no operator, or on text
+// columns, it's a case-insensitive substring match against the displayed
+// (formatted) cell text — so ">80" filters by value but "94" still finds
+// any score containing "94" as text.
+var FILTER_OP_RE = /^\s*(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)\s*$/;
+
+function rowMatchesFilters(r) {
+  for (var key in currentFilters) {
+    var raw = currentFilters[key];
+    if (!raw) continue;
+
+    if (key === "confidence_label") {
+      if (r.confidence_label !== raw) return false;
+      continue;
+    }
+
+    var display = formatCellValue(key, r);
+    if (NUMERIC_FILTER_KEYS.hasOwnProperty(key)) {
+      var m = raw.match(FILTER_OP_RE);
+      if (m && m[1]) {
+        var op = m[1], num = parseFloat(m[2]);
+        var actual = r[key];
+        if (actual === null || actual === undefined || typeof actual !== "number" || isNaN(actual)) return false;
+        if (op === ">=" && !(actual >= num)) return false;
+        else if (op === "<=" && !(actual <= num)) return false;
+        else if (op === ">" && !(actual > num)) return false;
+        else if (op === "<" && !(actual < num)) return false;
+        else if (op === "=" && !(Math.abs(actual - num) < 1e-9)) return false;
+        continue;
+      }
+    }
+    if (display.toLowerCase().indexOf(raw.toLowerCase()) === -1) return false;
+  }
+  return true;
+}
+
+document.querySelectorAll(".col-filter").forEach(function (el) {
+  var evt = el.tagName === "SELECT" ? "change" : "input";
+  el.addEventListener(evt, function () {
+    var key = el.getAttribute("data-key");
+    var val = el.value.trim();
+    if (val) { currentFilters[key] = val; el.classList.add("active"); }
+    else { delete currentFilters[key]; el.classList.remove("active"); }
+    renderTable();
+  });
+});
+document.getElementById("clear-filters-btn").addEventListener("click", function () {
+  currentFilters = {};
+  document.querySelectorAll(".col-filter").forEach(function (el) {
+    el.value = "";
+    el.classList.remove("active");
+  });
+  renderTable();
+});
+
 // TODO (see webapp/TODO.md): the original Dash table also flags repeated
 // annotations across scans and marks top-cosine-override rows with icons;
 // this table doesn't render either yet, though both fields are already
 // computed (top_cosine_overridden / top_cosine_compound per row).
 function renderTable() {
-  var rows = currentSummary.slice().sort(function (a, b) {
-    var av = a[currentSort.key], bv = b[currentSort.key];
-    if (av === bv) return 0;
-    if (typeof av === "string") return currentSort.dir * av.localeCompare(bv);
-    return currentSort.dir * ((av > bv) ? 1 : -1);
-  });
+  var rows = filteredSortedRows();
+
+  var summaryEl = document.getElementById("filter-summary");
+  var hasActiveFilters = Object.keys(currentFilters).length > 0;
+  if (hasActiveFilters) {
+    document.getElementById("filter-summary-text").textContent =
+      "Showing " + rows.length + " of " + currentSummary.length + " scans";
+    summaryEl.classList.add("visible");
+  } else {
+    summaryEl.classList.remove("visible");
+  }
+
   resultsBody.innerHTML = "";
   rows.forEach(function (r) {
     var tr = document.createElement("tr");
@@ -1894,16 +2028,20 @@ document.querySelectorAll("#results-table th").forEach(function (th) {
     renderTable();
   });
 });
-resultsBody.addEventListener("click", function (e) {
-  var tr = e.target.closest("tr");
-  if (!tr) return;
-  var idx = Array.prototype.indexOf.call(resultsBody.children, tr);
-  var rows = currentSummary.slice().sort(function (a, b) {
+function filteredSortedRows() {
+  return currentSummary.filter(rowMatchesFilters).sort(function (a, b) {
     var av = a[currentSort.key], bv = b[currentSort.key];
     if (av === bv) return 0;
     if (typeof av === "string") return currentSort.dir * av.localeCompare(bv);
     return currentSort.dir * ((av > bv) ? 1 : -1);
   });
+}
+
+resultsBody.addEventListener("click", function (e) {
+  var tr = e.target.closest("tr");
+  if (!tr) return;
+  var idx = Array.prototype.indexOf.call(resultsBody.children, tr);
+  var rows = filteredSortedRows();
   if (rows[idx]) openDetail(rows[idx]);
 });
 
@@ -2273,6 +2411,8 @@ function runScoring(taskId, workflowChoice) {
   resultsCard.style.display = "none";
   resultsWrap.style.display = "none";
   detailCard.style.display = "none";
+  currentFilters = {};
+  document.querySelectorAll(".col-filter").forEach(function (el) { el.value = ""; el.classList.remove("active"); });
   setStatus("Loading RDKit.js…", "info");
 
   var rdkitReady = RDKitMod ? Promise.resolve(RDKitMod) : loadRDKit();
