@@ -2,7 +2,7 @@ Flask
 gunicorn
 plotly
 numpy<2  # ms_entropy is not compatible with NumPy 2.0+
-pandas
+pandas<3  # pandas 3.0's new default string dtype breaks vectorized null-checks in bin/normalizer.py
 requests
 tqdm
 Werkzeug==2.3.7
