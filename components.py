@@ -796,18 +796,65 @@ LIMIT 100
 """.strip()
 
     url = MASST_API_URL + urllib.parse.quote(sql)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "GNPS2-AnnEx/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        if not isinstance(data, dict) or not data.get("ok") or not data.get("rows"):
-            return pd.DataFrame(), sql
-        columns = data["columns"]
-        rows = data["rows"]
-        return pd.DataFrame(rows, columns=columns), sql
-    except Exception:
-        logger.debug("MASST context fetch failed for InChIKeys %s", blocks)
+    req = urllib.request.Request(url, headers={"User-Agent": "GNPS2-AnnEx/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    if not isinstance(data, dict) or not data.get("ok"):
+        # Distinct from "no rows": the service responded but not with a usable payload.
+        raise RuntimeError(f"MASST API returned an unexpected payload: {data!r}"[:300])
+    if not data.get("rows"):
         return pd.DataFrame(), sql
+    columns = data["columns"]
+    rows = data["rows"]
+    return pd.DataFrame(rows, columns=columns), sql
+
+
+_REDU_BACKGROUND_SQL = """
+SELECT SampleType, COALESCE(UBERONBodyPartName, '') AS UBERONBodyPartName,
+       COUNT(*) AS num_samples
+FROM redu_table
+WHERE SampleType IS NOT NULL AND SampleType != ''
+GROUP BY SampleType, UBERONBodyPartName
+ORDER BY num_samples DESC
+""".strip()
+
+
+@lru_cache(maxsize=1)
+def _fetch_redu_background_cached():
+    """
+    Compound-independent (SampleType, UBERONBodyPartName) distribution across
+    the whole redu_table. Used as the denominator for detection rates: raw
+    MASST/REDU hit counts are dominated by whichever sample types / tissues
+    REDU simply has the most of (fecal, overwhelmingly), so a compound's hits
+    need to be compared against how common each category already is in the
+    database, not looked at alone.
+
+    Grouped by both columns in one query (rather than one query per chart) so
+    both the organism-type and tissue-type backgrounds can be derived from it
+    by summing over the other column.
+
+    Same caching discipline as _fetch_masst_context_cached: failures propagate
+    out of this lru_cache'd function (never memoized) and are caught one layer
+    up in _fetch_redu_background().
+    """
+    url = MASST_API_URL + urllib.parse.quote(_REDU_BACKGROUND_SQL)
+    req = urllib.request.Request(url, headers={"User-Agent": "GNPS2-AnnEx/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise RuntimeError(f"MASST API returned an unexpected payload: {data!r}"[:300])
+    if not data.get("rows"):
+        return pd.DataFrame(columns=["SampleType", "UBERONBodyPartName", "num_samples"])
+    return pd.DataFrame(data["rows"], columns=data["columns"])
+
+
+def _fetch_redu_background():
+    """Returns (df, error_message). error_message is None on success."""
+    try:
+        return _fetch_redu_background_cached(), None
+    except Exception as exc:
+        logger.warning("REDU background distribution fetch failed: %s", exc)
+        return pd.DataFrame(columns=["SampleType", "num_samples"]), str(exc)
 
 
 def _fetch_masst_context(inchikey_first_blocks: list):
@@ -815,12 +862,85 @@ def _fetch_masst_context(inchikey_first_blocks: list):
     Query the MASST records API for biological context of the given InChIKey first blocks.
 
     Results are cached in-process (lru_cache) so repeated views of the same compound
-    don't pay the ~10 s HTTP round-trip each time.
+    don't pay the ~10 s HTTP round-trip each time. Failures (network errors, timeouts,
+    malformed responses) are deliberately NOT caught here inside the cached function —
+    lru_cache never memoizes a raised exception, so a transient outage doesn't get
+    "frozen" as a permanent empty result; the next call retries the request. The
+    exception is caught here, one layer up, so it can be distinguished from a genuine
+    "no records found" response by the caller.
+
+    Returns (df, sql, error_message). error_message is None on success (including a
+    legitimate empty result); it is a short string when the fetch itself failed.
     """
     blocks_tuple = tuple(sorted(set(b for b in inchikey_first_blocks if b and len(b) >= 5)))
     if not blocks_tuple:
-        return pd.DataFrame(), ""
-    return _fetch_masst_context_cached(blocks_tuple)
+        return pd.DataFrame(), "", None
+    try:
+        df, sql = _fetch_masst_context_cached(blocks_tuple)
+        return df, sql, None
+    except Exception as exc:
+        logger.warning("MASST context fetch failed for InChIKeys %s: %s", blocks_tuple, exc)
+        return pd.DataFrame(), "", str(exc)
+
+
+_DETECTION_RATE_BASE_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(size=10, family="Inter, system-ui, sans-serif"),
+    height=380,
+    margin=dict(l=8, r=8, t=36, b=8),
+)
+
+
+def _detection_rate_df(compound_agg, background_agg, cat_col, min_background=20):
+    """
+    Detection rate of a compound within a category (SampleType or
+    UBERONBodyPartName): the percentage of ALL REDU samples in that category
+    that had a MASST hit for the compound. Both inputs are DataFrames with
+    [cat_col, num_samples]. Categories with fewer than min_background REDU
+    samples are dropped, since a rate over a handful of samples is noise.
+    """
+    merged = compound_agg.merge(
+        background_agg.rename(columns={"num_samples": "background_samples"}),
+        on=cat_col,
+        how="right",  # keep categories the compound never hit (rate = 0)
+    )
+    merged["num_samples"] = merged["num_samples"].fillna(0)
+    merged = merged[merged["background_samples"] >= min_background]
+    merged["detection_rate_pct"] = merged["num_samples"] / merged["background_samples"] * 100
+    return merged.sort_values("detection_rate_pct", ascending=True).tail(15)
+
+
+def _build_detection_rate_fig(rate_df, cat_col, title, colorscale, base_layout=None):
+    import plotly.graph_objects as go
+
+    if rate_df.empty:
+        return None
+    fig = go.Figure(
+        go.Bar(
+            x=rate_df["detection_rate_pct"],
+            y=rate_df[cat_col],
+            orientation="h",
+            marker=dict(
+                color=rate_df["detection_rate_pct"],
+                colorscale=colorscale,
+                showscale=False,
+            ),
+            customdata=rate_df[["num_samples", "background_samples"]],
+            hovertemplate=(
+                "%{y}<br>%{x:.1f}% of REDU samples"
+                "<br>%{customdata[0]:,.0f} / %{customdata[1]:,.0f} samples<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12)),
+        xaxis_title="% of REDU samples with a detection",
+        xaxis=dict(gridcolor="#e8e8e8"),
+        yaxis=dict(automargin=True),
+        **(base_layout or _DETECTION_RATE_BASE_LAYOUT),
+    )
+    return fig
 
 
 def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str = ""):
@@ -831,7 +951,7 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
     """
     import plotly.graph_objects as go
 
-    df, sql = _fetch_masst_context(inchikey_first_blocks)
+    df, sql, fetch_error = _fetch_masst_context(inchikey_first_blocks)
 
     _card_title = (
         f"Biological Context (MASST/REDU) — {compound_label}"
@@ -846,6 +966,22 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
         ],
         className="mt-2",
     )
+
+    if fetch_error:
+        return dbc.Card(
+            [
+                dbc.CardHeader(html.H5(_card_title)),
+                dbc.CardBody([
+                    html.Div(
+                        "MASST/REDU service is unreachable right now — this is not the same as "
+                        "\"no records found\". Try again shortly.",
+                        className="text-danger small",
+                    ),
+                    html.Div(fetch_error, className="text-muted small mt-1", style={"wordBreak": "break-all"}),
+                ]),
+            ],
+            className="mt-3",
+        )
 
     if df.empty:
         return dbc.Card(
@@ -903,7 +1039,6 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
     )
     chart_org = dcc.Graph(figure=fig_org, config=_chart_config, style={"height": "380px"})
 
-    # --- Chart 2 (col 2): Top 15 tissue types — animal samples only ---
     _non_animal = {
         "plant", "environmental", "food", "beverage", "food/beverage",
         "culture medium", "culture", "blank_extraction", "blank",
@@ -914,6 +1049,60 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
         & (df["UBERONBodyPartName"] != "")
         & ~df["SampleType"].str.lower().isin(_non_animal)
     ]
+
+    # --- Headline charts: detection rate within category ---
+    # Raw hit counts are dominated by whatever category (sample type, tissue)
+    # REDU simply has the most samples of (fecal, by a wide margin). Dividing
+    # by the number of REDU samples in each category gives the percentage of
+    # samples of that type in which the compound was detected, which is
+    # comparable across categories regardless of how well-sampled they are.
+    background_full_df, background_error = _fetch_redu_background()
+
+    def _rate_chart_or_placeholder(fig, empty_reason):
+        if fig is not None:
+            return dcc.Graph(figure=fig, config=_chart_config, style={"height": "380px"})
+        return html.Div(
+            "Detection rate unavailable"
+            + (f" ({background_error})" if background_error else f" ({empty_reason})."),
+            className="text-muted small p-4 text-center",
+            style={"height": "380px", "display": "flex", "alignItems": "center", "justifyContent": "center"},
+        )
+
+    fig_rate_org = fig_rate_tissue = None
+    if not background_error and not background_full_df.empty:
+        # Organism-type background: sum over all tissues (including
+        # missing/blank) per SampleType, matching how compound-side counts
+        # aren't restricted to rows with a known tissue.
+        background_org_agg = (
+            background_full_df.groupby("SampleType", as_index=False)["num_samples"].sum()
+        )
+        compound_by_type = df.groupby("SampleType", as_index=False)["num_samples"].sum()
+        rate_org_df = _detection_rate_df(compound_by_type, background_org_agg, "SampleType")
+        fig_rate_org = _build_detection_rate_fig(
+            rate_org_df, "SampleType", "Organism-Type Detection Rate", "Teal"
+        )
+
+        # Tissue background: same animal-only, known-tissue filter as the
+        # compound-side tissue aggregation below.
+        background_tissue_df = background_full_df[
+            (background_full_df["UBERONBodyPartName"] != "")
+            & ~background_full_df["SampleType"].str.lower().isin(_non_animal)
+        ]
+        background_tissue_agg = (
+            background_tissue_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"].sum()
+        )
+        compound_by_tissue = body_part_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"].sum()
+        rate_tissue_df = _detection_rate_df(
+            compound_by_tissue, background_tissue_agg, "UBERONBodyPartName"
+        )
+        fig_rate_tissue = _build_detection_rate_fig(
+            rate_tissue_df, "UBERONBodyPartName", "Tissue-Type Detection Rate (Animal)", "Purp"
+        )
+
+    chart_rate_org = _rate_chart_or_placeholder(fig_rate_org, "no categories with enough REDU samples")
+    chart_rate_tissue = _rate_chart_or_placeholder(fig_rate_tissue, "no tissue types with enough REDU samples")
+
+    # --- Chart 2 (col 2): Top 15 tissue types — animal samples only ---
     tissue_agg = (
         body_part_df.groupby("UBERONBodyPartName", as_index=False)["num_samples"]
         .sum()
@@ -1014,6 +1203,13 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
         className="text-muted d-block mt-2",
     )
 
+    rate_row = dbc.Row(
+        [
+            dbc.Col(chart_rate_org, width=6),
+            dbc.Col(chart_rate_tissue, width=6),
+        ],
+        className="g-2 mb-2",
+    )
     charts_row = dbc.Row(
         [
             dbc.Col(chart_org, width=4),
@@ -1025,6 +1221,9 @@ def _build_masst_context_card(inchikey_first_blocks: list, compound_label: str =
 
     body_children = [
         summary,
+        rate_row,
+        html.Small("Raw counts (for reference — dominated by REDU's overall sample composition):",
+                    className="text-muted d-block mb-1"),
         charts_row,
         download_link,
         inchikey_labels,
