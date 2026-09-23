@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 563.42 391.41">
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="-12 -12 587.42 415.41">
   <defs>
     <style>
       .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11, .cls-12 {
@@ -193,6 +193,7 @@
       }
     </style>
   </defs>
+  <rect id="background" x="-12" y="-12" width="587.42" height="415.41" fill="#ffffff"/>
   <g>
     <text class="cls-9" transform="translate(14.09 208.21)"><tspan x="0" y="0">4. Calculate scores</tspan></text>
     <g>
@@ -216,7 +217,7 @@
       </g>
       <g>
         <text class="cls-8" transform="translate(1.46 313.34)"><tspan x="0" y="0">Best cosine</tspan></text>
-        <text class="cls-6" transform="translate(171.97 313.29)"><tspan x="0" y="0">10%</tspan></text>
+        <text class="cls-6" transform="translate(171.97 313.29)"><tspan x="0" y="0">15%</tspan></text>
         <path class="cls-28" d="M70.26,318.21l93.72.15v-12.95l-93.72-.15v12.95Z"/>
         <path class="cls-34" d="M70.26,318.21l35.79.15v-12.95l-35.79-.15v12.95Z"/>
       </g>

@@ -151,6 +151,7 @@
       }
     </style>
   </defs>
+  <rect id="background" x="0" y="0" width="648.36" height="768.49" fill="#ffffff"/>
   <g id="patch_2" data-name="patch 2">
     <path class="cls-2" d="M316.51,77.5v21.69"/>
     <path class="cls-18" d="M318.51,95.18l-2,4-2-4h4Z"/>
