@@ -85,18 +85,42 @@
   #status.err  { display: block; background: #fdeaec; color: var(--err); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
-  #results-table { table-layout: fixed; width: 977px; }
+  /* border-collapse:collapse silently breaks `position:sticky` on <th> in
+     Chromium/WebKit — separate+0 spacing keeps the same visual look (each
+     cell already has its own border-bottom. */
+  #results-table { table-layout: fixed; width: 977px; border-collapse: separate; border-spacing: 0; }
   #results-table td.compound-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  tr.filter-row th { position: sticky; top: 29px; background: var(--card); padding: 4px 6px; }
-  tr.filter-row input, tr.filter-row select {
-    width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px;
-    border: 1px solid var(--line); border-radius: 4px; font-family: inherit;
+
+  /* Standalone filter panel above the table (not inside <thead>) — a second
+     sticky row stacked under the table's own sticky header turned out to be
+     unreliable across re-renders in testing, so filters live here instead,
+     wired to the same .col-filter / data-key contract as before. */
+  .filter-panel {
+    margin: 4px 0 10px; padding: 12px 14px; background: var(--accent-bg); border-radius: 8px;
   }
-  tr.filter-row input.active, tr.filter-row select.active { border-color: var(--accent); background: var(--accent-bg); }
-  #filter-summary { font-size: 12px; color: var(--muted); padding: 8px 2px 0; display: none; }
-  #filter-summary.visible { display: flex; align-items: center; gap: 10px; }
-  #filter-summary button { padding: 3px 10px; font-size: 12px; }
-  th { cursor: pointer; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--card); }
+  .filter-grid {
+    display: grid; gap: 10px 12px; align-items: end;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  }
+  .filter-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .filter-field-wide { grid-column: span 2; }
+  .filter-field label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Reset the global input/select min-widths (260px/160px) — they made the
+     fields overflow their grid cells and overlap each other. */
+  .filter-field input, .filter-field select {
+    width: 100%; min-width: 0; box-sizing: border-box; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--line); border-radius: 5px; font-family: inherit; background: #fff;
+  }
+  .filter-panel-footer { display: flex; justify-content: flex-end; margin-top: 10px; }
+  .filter-panel-footer button { padding: 6px 12px; font-size: 13px; }
+  .filter-field input::placeholder { color: #bbb; opacity: 1; }
+  .filter-field input.active, .filter-field select.active { border-color: var(--accent); background: var(--accent-bg); }
+  #filter-summary { font-size: 12px; color: var(--muted); padding: 0 2px 8px; display: none; }
+  #filter-summary.visible { display: block; }
+  th { cursor: pointer; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--card); height: 29px; box-sizing: border-box; }
   tbody tr:hover { background: var(--accent-bg); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
   .badge.success { background: #eafbe7; color: var(--ok); }
@@ -233,6 +257,38 @@
   <div class="card" id="results-card" style="display:none;">
     <h2>Scored scans</h2>
     <p class="sub" style="margin:-6px 0 14px;">Click a row for the full metric breakdown. <button id="download-btn" class="secondary" type="button" style="margin-left:8px;">Download CSV</button></p>
+
+    <div id="filter-panel" class="filter-panel">
+      <div class="filter-grid">
+        <div class="filter-field filter-field-wide"><label>Top compound</label><input type="text" class="col-filter" data-key="top_compound" placeholder="search compound name…"></div>
+        <div class="filter-field filter-field-wide">
+          <label>Label</label>
+          <select class="col-filter" data-key="confidence_label">
+            <option value="">All</option>
+            <option value="Consistent evidence">Consistent evidence</option>
+            <option value="Inconclusive">Inconclusive</option>
+            <option value="Inconsistent evidence">Inconsistent evidence</option>
+            <option value="Structure unknown">Structure unknown</option>
+          </select>
+        </div>
+        <div class="filter-field"><label>Score</label><input type="text" class="col-filter" data-key="confidence_score" placeholder=">=80" title="e.g. >=80"></div>
+        <div class="filter-field"><label>Scan</label><input type="text" class="col-filter" data-key="scan" placeholder=">=100" title="e.g. >=100"></div>
+        <div class="filter-field"><label>RT (min)</label><input type="text" class="col-filter" data-key="retention_time" placeholder="<5" title="e.g. <5"></div>
+        <div class="filter-field"><label title="Precursor m/z">Precursor m/z</label><input type="text" class="col-filter" data-key="precursor_mz" placeholder=">300" title="e.g. >300"></div>
+        <div class="filter-field"><label>Support</label><input type="text" class="col-filter" data-key="supporting_matches" placeholder=">=2" title="e.g. >=2"></div>
+        <div class="filter-field"><label>Total</label><input type="text" class="col-filter" data-key="total_matches" placeholder=">=2" title="e.g. >=2"></div>
+        <div class="filter-field"><label>Max cosine</label><input type="text" class="col-filter" data-key="max_cosine" placeholder=">=0.9" title="e.g. >=0.9"></div>
+        <div class="filter-field"><label>Tanimoto</label><input type="text" class="col-filter" data-key="tanimoto_score" placeholder=">=0.7" title="e.g. >=0.7"></div>
+        <div class="filter-field"><label>Entropy</label><input type="text" class="col-filter" data-key="query_entropy" placeholder="<3" title="e.g. <3"></div>
+      </div>
+      <div class="filter-panel-footer">
+        <button id="clear-filters-btn" class="secondary" type="button">Clear filters</button>
+      </div>
+    </div>
+    <div id="filter-summary" class="filter-summary">
+      <span id="filter-summary-text"></span>
+    </div>
+
     <div id="results-wrap">
       <table id="results-table">
         <colgroup>
@@ -262,34 +318,9 @@
             <th data-key="tanimoto_score">Tanimoto</th>
             <th data-key="query_entropy">Entropy</th>
           </tr>
-          <tr id="filter-row" class="filter-row">
-            <th><input type="text" class="col-filter" data-key="scan" placeholder=">=100" title="e.g. >=100"></th>
-            <th><input type="text" class="col-filter" data-key="retention_time" placeholder="<5" title="e.g. <5"></th>
-            <th><input type="text" class="col-filter" data-key="precursor_mz" placeholder=">300" title="e.g. >300"></th>
-            <th><input type="text" class="col-filter" data-key="top_compound" placeholder="search…" title="search compound name"></th>
-            <th><input type="text" class="col-filter" data-key="confidence_score" placeholder=">=80" title="e.g. >=80"></th>
-            <th>
-              <select class="col-filter" data-key="confidence_label">
-                <option value="">All</option>
-                <option value="Consistent evidence">Consistent evidence</option>
-                <option value="Inconclusive">Inconclusive</option>
-                <option value="Inconsistent evidence">Inconsistent evidence</option>
-                <option value="Structure unknown">Structure unknown</option>
-              </select>
-            </th>
-            <th><input type="text" class="col-filter" data-key="supporting_matches" placeholder=""></th>
-            <th><input type="text" class="col-filter" data-key="total_matches" placeholder=""></th>
-            <th><input type="text" class="col-filter" data-key="max_cosine" placeholder=">=0.9" title="e.g. >=0.9"></th>
-            <th><input type="text" class="col-filter" data-key="tanimoto_score" placeholder=""></th>
-            <th><input type="text" class="col-filter" data-key="query_entropy" placeholder=""></th>
-          </tr>
         </thead>
         <tbody></tbody>
       </table>
-      <div id="filter-summary" class="filter-summary">
-        <span id="filter-summary-text"></span>
-        <button id="clear-filters-btn" class="secondary" type="button">Clear filters</button>
-      </div>
     </div>
   </div>
 
@@ -1920,7 +1951,20 @@ function formatCellValue(key, r) {
 // columns, it's a case-insensitive substring match against the displayed
 // (formatted) cell text — so ">80" filters by value but "94" still finds
 // any score containing "94" as text.
-var FILTER_OP_RE = /^\s*(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)\s*$/;
+// Accepts integers, decimals and leading-dot decimals (">=.9").
+var FILTER_OP_RE = /^\s*(>=|<=|>|<|=)\s*(-?(?:\d+\.?\d*|\.\d+))\s*$/;
+// An operator typed with no number yet (e.g. just ">=") — ignore the filter
+// instead of substring-matching the literal ">=" and hiding every row.
+var FILTER_OP_PARTIAL_RE = /^\s*(>=|<=|>|<|=)\s*-?\.?\s*$/;
+
+// Some numeric fields are not stored as numbers — `scan` is a string because
+// it comes from a groupBy key (and is used as a lookup key elsewhere), so
+// coerce here rather than changing its type. null/""/NaN -> null.
+function numericValue(v) {
+  if (v === null || v === undefined || v === "") return null;
+  var n = typeof v === "number" ? v : parseFloat(v);
+  return isFinite(n) ? n : null;
+}
 
 function rowMatchesFilters(r) {
   for (var key in currentFilters) {
@@ -1934,11 +1978,12 @@ function rowMatchesFilters(r) {
 
     var display = formatCellValue(key, r);
     if (NUMERIC_FILTER_KEYS.hasOwnProperty(key)) {
+      if (FILTER_OP_PARTIAL_RE.test(raw)) continue;
       var m = raw.match(FILTER_OP_RE);
-      if (m && m[1]) {
+      if (m) {
         var op = m[1], num = parseFloat(m[2]);
-        var actual = r[key];
-        if (actual === null || actual === undefined || typeof actual !== "number" || isNaN(actual)) return false;
+        var actual = numericValue(r[key]);
+        if (actual === null) return false;
         if (op === ">=" && !(actual >= num)) return false;
         else if (op === "<=" && !(actual <= num)) return false;
         else if (op === ">" && !(actual > num)) return false;
@@ -2031,6 +2076,15 @@ document.querySelectorAll("#results-table th").forEach(function (th) {
 function filteredSortedRows() {
   return currentSummary.filter(rowMatchesFilters).sort(function (a, b) {
     var av = a[currentSort.key], bv = b[currentSort.key];
+    if (NUMERIC_FILTER_KEYS.hasOwnProperty(currentSort.key)) {
+      // Numeric columns compare as numbers (scan is stored as a string);
+      // missing values always sort last regardless of direction.
+      av = numericValue(av); bv = numericValue(bv);
+      if (av === bv) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return currentSort.dir * (av - bv);
+    }
     if (av === bv) return 0;
     if (typeof av === "string") return currentSort.dir * av.localeCompare(bv);
     return currentSort.dir * ((av > bv) ? 1 : -1);
