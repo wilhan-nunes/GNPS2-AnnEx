@@ -192,6 +192,29 @@
   .msms-detail .group-links { font-size: 11px; display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
   .msms-detail .group-links a { color: var(--accent); text-decoration: none; }
   .msms-detail .group-links a:hover { text-decoration: underline; }
+  /* ── Biological context (MASST/REDU) ── */
+  .msms-detail .masst-group { background: #fff; border: 1px solid var(--border2); border-radius: 10px; margin-top: 10px; }
+  .msms-detail .masst-group > summary { padding: 10px 14px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .msms-detail .masst-group > summary .mono { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
+  .msms-detail .masst-body { padding: 0 14px 14px; }
+  .msms-detail .masst-note { font-size: 12px; color: var(--muted); }
+  .msms-detail .masst-error { font-size: 12px; color: var(--err); }
+  .msms-detail .masst-error-detail { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+  .msms-detail .masst-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 10px 0; }
+  @media (max-width: 780px) { .msms-detail .masst-charts { grid-template-columns: 1fr; } }
+  .msms-detail .hbar-chart { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .msms-detail .hbar-title { font-size: 12px; font-weight: 600; }
+  .msms-detail .hbar-sub { font-size: 10px; color: var(--muted); margin: 2px 0 8px; }
+  .msms-detail .hbar-row { display: grid; grid-template-columns: minmax(0, 42%) 1fr 56px; gap: 8px; align-items: center; font-size: 11px; padding: 2px 0; }
+  .msms-detail .hbar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msms-detail .hbar-track { height: 10px; background: #eef1f4; border-radius: 3px; overflow: hidden; }
+  .msms-detail .hbar-fill { height: 100%; border-radius: 3px; }
+  .msms-detail .hbar-val { font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: right; }
+  .msms-detail .hbar-empty { font-size: 11px; color: var(--muted); padding: 24px 0; text-align: center; }
+  .msms-detail .masst-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .msms-detail .masst-actions button { padding: 5px 10px; font-size: 12px; }
+  .msms-detail .masst-sql summary { font-size: 12px; cursor: pointer; color: var(--muted); }
+  .msms-detail .masst-sql pre { font-size: 11px; white-space: pre-wrap; word-break: break-all; }
   .group-card.clickable { cursor: pointer; transition: box-shadow 0.1s, border-color 0.1s; }
   .group-card.clickable:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgba(41,128,185,0.12); }
 
@@ -369,6 +392,9 @@
     <h2 style="margin-top:20px;">Candidate structures in this scan</h2>
     <div class="groups-grid" id="groups-grid"></div>
 
+    <h2 style="margin-top:20px;">Biological context (MASST/REDU)</h2>
+    <div id="masst-section"></div>
+
     <div class="legend" style="margin-top:20px;">
       <span><span class="legend-dot" style="background:var(--ok)"></span>Consistent evidence: score &ge; 80</span>
       <span><span class="legend-dot" style="background:var(--warn)"></span>Inconclusive: 55&ndash;79.9</span>
@@ -378,6 +404,7 @@
 
   <footer>All computation runs client-side via RDKit.js (loaded from a CDN — cheminformatics of this depth has no pure-JS equivalent) and plain JavaScript. GNPS2 requests go directly from your browser to gnps2.org over CORS.
   <br>One exception: library rows whose only structure field is INCHI (no SMILES) are resolved via a best-effort, exact-match lookup to PubChem (structure identifier only, never your spectra/task data) before scoring, since no browser-side toolkit here can parse InChI — see the code comment near <code>deriveSmilesFromInchi</code>.
+  <br>Biological context queries send only the InChIKey first block of each candidate structure to the MASST records API (masst-records.gnps2.org), currently via a CORS proxy because that service does not allow browser requests yet — see <code>MASST_CORS_PROXY</code>.
   <br>Known difference from the Python app: on rare positional-isomer group ties (~1% of scans in testing), this port and the Python scorer can pick different, equally-valid tied groups — see the code comment near <code>exactToPositional</code> for details.</footer>
 </div>
 
@@ -447,6 +474,22 @@ var DEFAULT_NOISE_THRESHOLD = 0.01;
 var DEFAULT_MAX_PEAK_NUM = 100;
 var GNPS2_HOST = "https://gnps2.org";
 var LOADER_TIMEOUT_MS = 20000;
+
+// MASST records API (Datasette). Unlike gnps2.org it sends no
+// Access-Control-Allow-Origin header, so browsers block direct requests and
+// they have to go through a CORS proxy. MASST_CORS_PROXY picks how:
+//   ""                → call MASST_RECORDS_URL directly (once upstream allows CORS,
+//                       e.g. Datasette started with --cors)
+//   contains "{url}"  → wrapping proxy; {url} becomes the percent-encoded
+//                       upstream URL (e.g. "https://proxy.example/?url={url}")
+//   anything else     → path-mirroring proxy base that replaces the upstream
+//                       origin (e.g. "https://masst-proxy.gnps2.org")
+// Default is the local test proxy (webapp/masst_cors_proxy.py) until GNPS2
+// hosts one. Override per page load with ?masst_proxy=<value>; an empty
+// value (?masst_proxy=) means direct.
+var MASST_RECORDS_URL = "https://masst-records.gnps2.org/masst_records.json";
+var MASST_CORS_PROXY = "http://localhost:8787";
+var MASST_TIMEOUT_MS = 60000;
 
 function confidenceCategory(score) {
   if (score >= 80) return ["Consistent evidence", "success"];
@@ -2342,6 +2385,332 @@ document.addEventListener("keydown", function (e) {
   if (e.key === "Escape") closeStructureModal();
 });
 
+// ── Biological context (⇔ components.py's _build_masst_section /
+// _build_masst_context_card) ──
+var masstProxy = (function () {
+  var params = new URLSearchParams(window.location.search);
+  return params.has("masst_proxy") ? params.get("masst_proxy").trim() : MASST_CORS_PROXY;
+})();
+
+function masstQueryUrl(sql) {
+  var upstream = MASST_RECORDS_URL + "?sql=" + encodeURIComponent(sql);
+  if (!masstProxy) return upstream;
+  if (masstProxy.indexOf("{url}") !== -1) return masstProxy.replace("{url}", encodeURIComponent(upstream));
+  return masstProxy.replace(/\/+$/, "") + upstream.replace(/^https?:\/\/[^\/]+/, "");
+}
+
+function fetchMasstSql(sql) {
+  return fetchWithTimeout(masstQueryUrl(sql), {}, MASST_TIMEOUT_MS).catch(function (err) {
+    if (err && err.name === "AbortError") throw new Error("timed out after " + MASST_TIMEOUT_MS / 1000 + " s");
+    throw err;
+  }).then(function (resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.json();
+  }).then(function (data) {
+    // Distinct from "no rows": the service responded but not with a usable payload.
+    if (!data || typeof data !== "object" || !data.ok) {
+      throw new Error("MASST API returned an unexpected payload" + (data && data.error ? ": " + data.error : ""));
+    }
+    var cols = data.columns || [];
+    return (data.rows || []).map(function (values) {
+      var o = {};
+      cols.forEach(function (c, i) { o[c] = values[i]; });
+      return o;
+    });
+  });
+}
+
+function masstContextSql(block) {
+  return [
+    "WITH filtered AS (",
+    "  SELECT m.mri_id_int, m.spectrum_id_int",
+    "  FROM masst_table m",
+    "  WHERE m.spectrum_id_int IN (",
+    "    SELECT spectrum_id_int FROM library_table",
+    "    WHERE InChIKey_smiles_firstBlock IN ('" + block + "')",
+    "  )",
+    "),",
+    "best_per_mri AS (",
+    "  SELECT mri_id_int, COUNT(DISTINCT spectrum_id_int) AS unique_spectra",
+    "  FROM filtered GROUP BY mri_id_int",
+    ")",
+    "SELECT rd.SampleType, rd.UBERONBodyPartName,",
+    "       COUNT(*) AS num_samples,",
+    "       SUM(b.unique_spectra) AS total_spectra",
+    "FROM best_per_mri b",
+    "JOIN redu_table rd ON b.mri_id_int = rd.mri_id_int",
+    "WHERE rd.SampleType IS NOT NULL AND rd.SampleType != ''",
+    "GROUP BY rd.SampleType, rd.UBERONBodyPartName",
+    "ORDER BY num_samples DESC",
+    "LIMIT 100"
+  ].join("\n");
+}
+
+var REDU_BACKGROUND_SQL = [
+  "SELECT SampleType, COALESCE(UBERONBodyPartName, '') AS UBERONBodyPartName,",
+  "       COUNT(*) AS num_samples",
+  "FROM redu_table",
+  "WHERE SampleType IS NOT NULL AND SampleType != ''",
+  "GROUP BY SampleType, UBERONBodyPartName",
+  "ORDER BY num_samples DESC"
+].join("\n");
+
+// Promise caches. A rejected fetch is evicted so a transient outage is retried
+// next time instead of being remembered as "no data" (same discipline as the
+// Python lru_cache'd fetchers, which let exceptions escape the cache).
+var _masstContextCache = {};
+var _reduBackgroundPromise = null;
+
+function fetchMasstContext(block) {
+  if (!_masstContextCache[block]) {
+    _masstContextCache[block] = fetchMasstSql(masstContextSql(block)).catch(function (err) {
+      delete _masstContextCache[block];
+      throw err;
+    });
+  }
+  return _masstContextCache[block];
+}
+
+function fetchReduBackground() {
+  if (!_reduBackgroundPromise) {
+    _reduBackgroundPromise = fetchMasstSql(REDU_BACKGROUND_SQL).catch(function (err) {
+      _reduBackgroundPromise = null;
+      throw err;
+    });
+  }
+  return _reduBackgroundPromise;
+}
+
+var MASST_NON_ANIMAL = {
+  "plant": 1, "environmental": 1, "food": 1, "beverage": 1, "food/beverage": 1,
+  "culture medium": 1, "culture": 1, "blank_extraction": 1, "blank": 1,
+  "standard": 1, "qc": 1, "reference material": 1
+};
+var MASST_MIN_BACKGROUND = 20;
+var MASST_TOP_N = 15;
+
+function isAnimalTissueRow(r) {
+  return toText(r.UBERONBodyPartName) !== "" && !MASST_NON_ANIMAL.hasOwnProperty(toText(r.SampleType).toLowerCase());
+}
+
+function sumByCategory(rows, catKey, valueKey) {
+  var out = {};
+  rows.forEach(function (r) {
+    var cat = toText(r[catKey]);
+    out[cat] = (out[cat] || 0) + toNum(r[valueKey], 0);
+  });
+  return out;
+}
+
+// ⇔ _detection_rate_df: share of ALL REDU samples in a category that had a
+// MASST hit. Keeps categories the compound never hit (rate 0) and drops
+// categories with fewer than MASST_MIN_BACKGROUND samples (too noisy).
+function detectionRates(compoundCounts, backgroundCounts) {
+  return Object.keys(backgroundCounts)
+    .filter(function (cat) { return backgroundCounts[cat] >= MASST_MIN_BACKGROUND; })
+    .map(function (cat) {
+      var hits = compoundCounts[cat] || 0;
+      return { category: cat, hits: hits, background: backgroundCounts[cat], value: hits / backgroundCounts[cat] * 100 };
+    })
+    .sort(function (a, b) { return b.value - a.value; })
+    .slice(0, MASST_TOP_N);
+}
+
+function topCounts(counts) {
+  return Object.keys(counts)
+    .map(function (cat) { return { category: cat, value: counts[cat] }; })
+    .sort(function (a, b) { return b.value - a.value; })
+    .slice(0, MASST_TOP_N);
+}
+
+function el(tag, className, text) {
+  var node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function formatPct(v) { return (v > 0 && v < 1 ? v.toFixed(2) : v.toFixed(1)) + "%"; }
+function formatCount(v) { return Math.round(v).toLocaleString(); }
+
+// Horizontal bar chart in plain DOM — stands in for the Python app's Plotly
+// bars without pulling in Plotly. Fill opacity scales with value to echo the
+// Teal/Purp colour scales there.
+function buildHbarChart(title, subtitle, items, color, formatValue, tooltip, emptyText) {
+  var chart = el("div", "hbar-chart");
+  chart.appendChild(el("div", "hbar-title", title));
+  chart.appendChild(el("div", "hbar-sub", subtitle));
+  if (!items.length) {
+    chart.appendChild(el("div", "hbar-empty", emptyText));
+    return chart;
+  }
+  var max = Math.max.apply(null, items.map(function (it) { return it.value; })) || 1;
+  items.forEach(function (it) {
+    var rowEl = el("div", "hbar-row");
+    rowEl.title = tooltip(it);
+    rowEl.appendChild(el("span", "hbar-label", it.category || "(unspecified)"));
+    var track = el("div", "hbar-track");
+    var fill = el("div", "hbar-fill");
+    var frac = it.value / max;
+    fill.style.width = (frac * 100) + "%";
+    fill.style.background = color;
+    fill.style.opacity = String(0.4 + 0.6 * frac);
+    track.appendChild(fill);
+    rowEl.appendChild(track);
+    rowEl.appendChild(el("span", "hbar-val", formatValue(it.value)));
+    chart.appendChild(rowEl);
+  });
+  return chart;
+}
+
+var MASST_TEAL = "#1f8a8a";
+var MASST_PURP = "#7b5ea7";
+
+function buildMasstSqlDetails(sql) {
+  var details = el("details", "masst-sql");
+  details.appendChild(el("summary", "", "SQL query"));
+  details.appendChild(el("pre", "mono", sql));
+  return details;
+}
+
+function downloadCsv(filename, cols, rows) {
+  var lines = [cols.join(",")];
+  rows.forEach(function (r) { lines.push(cols.map(function (c) { return csvCell(r[c]); }).join(",")); });
+  var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function renderMasstBody(body, block) {
+  body.innerHTML = "";
+  body.appendChild(el("div", "masst-note", "Querying MASST/REDU…"));
+  var sql = masstContextSql(block);
+
+  fetchMasstContext(block).then(function (rows) {
+    body.innerHTML = "";
+    if (!rows.length) {
+      body.appendChild(el("div", "masst-note", "No MASST/REDU biological context found for this structure."));
+      body.appendChild(buildMasstSqlDetails(sql));
+      return;
+    }
+
+    var totalSamples = rows.reduce(function (s, r) { return s + toNum(r.num_samples, 0); }, 0);
+    var totalSpectra = rows.reduce(function (s, r) { return s + toNum(r.total_spectra, 0); }, 0);
+    body.appendChild(el("div", "masst-note",
+      "Found in " + formatCount(totalSamples) + " REDU samples across " + formatCount(totalSpectra) + " spectra."));
+
+    var tissueRows = rows.filter(isAnimalTissueRow);
+    var compoundByType = sumByCategory(rows, "SampleType", "num_samples");
+    var compoundByTissue = sumByCategory(tissueRows, "UBERONBodyPartName", "num_samples");
+
+    var charts = el("div", "masst-charts");
+    var rateOrgSlot = el("div");
+    var rateTissueSlot = el("div");
+    rateOrgSlot.appendChild(el("div", "hbar-chart masst-note", "Loading REDU background…"));
+    charts.appendChild(rateOrgSlot);
+    charts.appendChild(rateTissueSlot);
+
+    function countTooltip(it) { return it.category + ": " + formatCount(it.value) + " samples"; }
+    charts.appendChild(buildHbarChart("Samples by organism type", "MASST hits per REDU sample type",
+      topCounts(compoundByType), MASST_TEAL, formatCount, countTooltip, "No sample types."));
+    charts.appendChild(buildHbarChart("Top tissue types (animal)", "MASST hits per UBERON body part",
+      topCounts(compoundByTissue), MASST_PURP, formatCount, countTooltip, "No animal tissue annotations."));
+    body.appendChild(charts);
+
+    // Headline charts: raw counts are dominated by whatever REDU has the most
+    // of (fecal, by far), so divide by each category's REDU sample count.
+    function rateTooltip(it) {
+      return it.category + ": " + formatPct(it.value) + " of REDU samples (" +
+        formatCount(it.hits) + " / " + formatCount(it.background) + ")";
+    }
+    fetchReduBackground().then(function (bgRows) {
+      var bgTissueRows = bgRows.filter(isAnimalTissueRow);
+      rateOrgSlot.innerHTML = "";
+      rateOrgSlot.appendChild(buildHbarChart("Organism-type detection rate", "% of REDU samples of each type with a detection",
+        detectionRates(compoundByType, sumByCategory(bgRows, "SampleType", "num_samples")),
+        MASST_TEAL, formatPct, rateTooltip, "Detection rate unavailable (no categories with enough REDU samples)."));
+      rateTissueSlot.appendChild(buildHbarChart("Tissue-type detection rate (animal)", "% of REDU samples of each tissue with a detection",
+        detectionRates(compoundByTissue, sumByCategory(bgTissueRows, "UBERONBodyPartName", "num_samples")),
+        MASST_PURP, formatPct, rateTooltip, "Detection rate unavailable (no tissue types with enough REDU samples)."));
+    }).catch(function (err) {
+      rateOrgSlot.innerHTML = "";
+      rateOrgSlot.appendChild(el("div", "hbar-chart hbar-empty", "Detection rates unavailable (REDU background fetch failed: " + err.message + ")."));
+    });
+
+    var actions = el("div", "masst-actions");
+    var dl = el("button", "secondary", "Download full table (CSV)");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      downloadCsv("masst_context_" + block + ".csv", ["SampleType", "UBERONBodyPartName", "num_samples", "total_spectra"], rows);
+    });
+    actions.appendChild(dl);
+    body.appendChild(actions);
+    body.appendChild(buildMasstSqlDetails(sql));
+  }).catch(function (err) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "masst-error",
+      "MASST/REDU service is unreachable right now — this is not the same as \"no records found\"."));
+    body.appendChild(el("div", "masst-error-detail",
+      err.message + " · via " + (masstProxy ? "proxy " + masstProxy : "direct request (no proxy)")));
+    var actions = el("div", "masst-actions");
+    var retry = el("button", "secondary", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", function () { renderMasstBody(body, block); });
+    actions.appendChild(retry);
+    body.appendChild(actions);
+  });
+}
+
+// One entry per distinct InChIKey first block, in card order. Groups with no
+// InChIKey fall back to the SMILES-derived planar key.
+function masstItemsForRow(row) {
+  var seen = {};
+  var items = [];
+  (row._groups || []).forEach(function (g) {
+    var block = toText(g.inchikey).split("-")[0].toUpperCase();
+    if (!/^[A-Z]{14}$/.test(block) && isValidField(g.smiles)) block = smilesToPlanarInchiKey(g.smiles) || "";
+    if (!/^[A-Z]{14}$/.test(block) || seen[block]) return;
+    seen[block] = true;
+    items.push({ compound: g.compound, block: block, winning: g.support_group_key === row.support_group_key });
+  });
+  return items;
+}
+
+// Each group is a collapsible block; only the winning group (or a lone group)
+// is fetched up front, the rest fetch on first expand to keep proxy traffic down.
+function renderMasstSection(row) {
+  var section = document.getElementById("masst-section");
+  section.innerHTML = "";
+  var items = masstItemsForRow(row);
+  if (!items.length) {
+    section.appendChild(el("div", "masst-note", "No candidate structure in this scan has an InChIKey to look up."));
+    return;
+  }
+  items.forEach(function (it) {
+    var details = el("details", "masst-group");
+    var summary = el("summary", "", it.compound);
+    summary.appendChild(el("span", "mono", it.block + (it.winning ? " · winning group" : "")));
+    details.appendChild(summary);
+    var body = el("div", "masst-body");
+    details.appendChild(body);
+    var loaded = false;
+    details.addEventListener("toggle", function () {
+      if (details.open && !loaded) {
+        loaded = true;
+        renderMasstBody(body, it.block);
+      }
+    });
+    if (it.winning || items.length === 1) details.open = true;
+    section.appendChild(details);
+  });
+}
+
 function openDetail(row) {
   resultsCard.style.display = "none";
   detailCard.style.display = "block";
@@ -2416,6 +2785,7 @@ function openDetail(row) {
   tbody.appendChild(totalRow);
 
   renderGroupsGrid(row);
+  renderMasstSection(row);
 
   var params = new URLSearchParams(window.location.search);
   params.set("scan", row.scan);
@@ -2439,23 +2809,14 @@ document.getElementById("download-btn").addEventListener("click", function () {
     "cosine_consistency", "tanimoto_score", "tanimoto_source", "shared_peaks", "shared_peaks_score",
     "library_diversity_score", "median_abs_ppm_error", "mz_precision", "query_entropy", "query_entropy_label",
     "top_cosine_overridden", "top_cosine_compound", "query_usi"];
-  function csvCell(v) {
-    if (v === null || v === undefined) return "";
-    var s = String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }
-  var lines = [cols.join(",")];
-  currentSummary.forEach(function (r) { lines.push(cols.map(function (c) { return csvCell(r[c]); }).join(",")); });
-  var blob = new Blob([lines.join("\n")], { type: "text/csv" });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement("a");
-  a.href = url;
-  a.download = "gnps2_annex_" + (currentTaskId || "scores") + ".csv";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadCsv("gnps2_annex_" + (currentTaskId || "scores") + ".csv", cols, currentSummary);
 });
+
+function csvCell(v) {
+  if (v === null || v === undefined) return "";
+  var s = String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
 
 var loadBtn = document.getElementById("load-btn");
 var exampleBtn = document.getElementById("example-btn");
