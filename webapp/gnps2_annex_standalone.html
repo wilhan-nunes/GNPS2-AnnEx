@@ -198,6 +198,12 @@
   .msms-detail .masst-group > summary .mono { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
   .msms-detail .masst-body { padding: 0 14px 14px; }
   .msms-detail .masst-note { font-size: 12px; color: var(--muted); }
+  .msms-detail .masst-empty { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; margin-bottom: 8px; background: #f6f8fa; border: 1px solid var(--border2); border-left: 3px solid var(--accent); border-radius: 8px; font-size: 12px; }
+  .msms-detail .masst-empty-icon { color: var(--accent); font-size: 15px; line-height: 1.1; }
+  .msms-detail .masst-empty-sub { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .msms-detail .masst-cache-note { font-size: 11px; margin-top: 2px; }
+  .msms-detail .masst-cache-note a { color: var(--accent); text-decoration: none; }
+  .msms-detail .masst-cache-note a:hover { text-decoration: underline; }
   .msms-detail .masst-error { font-size: 12px; color: var(--err); }
   .msms-detail .masst-error-detail { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-all; }
   .msms-detail .masst-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 10px 0; }
@@ -211,6 +217,18 @@
   .msms-detail .hbar-fill { height: 100%; border-radius: 3px; }
   .msms-detail .hbar-val { font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: right; }
   .msms-detail .hbar-empty { font-size: 11px; color: var(--muted); padding: 24px 0; text-align: center; }
+  .msms-detail .hbar-foot { font-size: 10px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+  .msms-detail .masst-limit { font-size: 11px; color: var(--warn); background: #fff6e5; padding: 6px 10px; border-radius: 6px; margin-top: 6px; }
+  .msms-detail .masst-all { margin: 4px 0 8px; }
+  .msms-detail .masst-all > summary { font-size: 12px; color: var(--accent); cursor: pointer; }
+  .msms-detail .masst-all-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 0 10px 10px; margin-top: 6px; }
+  .msms-detail .masst-all h4 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 12px 0 4px; }
+  .msms-detail .masst-all table { font-size: 12px; }
+  .msms-detail .masst-all th { position: static; cursor: default; }
+  .msms-detail .masst-all .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .msms-detail .masst-all .tag { font-size: 10px; color: var(--warn); }
+  .msms-detail .masst-actions a { font-size: 12px; color: var(--accent); text-decoration: none; }
+  .msms-detail .masst-actions a:hover { text-decoration: underline; }
   .msms-detail .masst-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
   .msms-detail .masst-actions button { padding: 5px 10px; font-size: 12px; }
   .msms-detail .masst-sql summary { font-size: 12px; cursor: pointer; color: var(--muted); }
@@ -2420,8 +2438,11 @@ function fetchMasstSql(sql) {
   });
 }
 
-function masstContextSql(block) {
-  return [
+var MASST_CONTEXT_LIMIT = 100;
+
+// unlimited: drop the LIMIT, for the "open in MASST records" link.
+function masstContextSql(block, unlimited) {
+  var lines = [
     "WITH filtered AS (",
     "  SELECT m.mri_id_int, m.spectrum_id_int",
     "  FROM masst_table m",
@@ -2441,9 +2462,16 @@ function masstContextSql(block) {
     "JOIN redu_table rd ON b.mri_id_int = rd.mri_id_int",
     "WHERE rd.SampleType IS NOT NULL AND rd.SampleType != ''",
     "GROUP BY rd.SampleType, rd.UBERONBodyPartName",
-    "ORDER BY num_samples DESC",
-    "LIMIT 100"
-  ].join("\n");
+    "ORDER BY num_samples DESC"
+  ];
+  if (!unlimited) lines.push("LIMIT " + MASST_CONTEXT_LIMIT);
+  return lines.join("\n");
+}
+
+// Datasette's HTML query page: full results, editable SQL, CSV/JSON export.
+// A plain link (navigation), so it needs no CORS proxy.
+function masstExploreUrl(block) {
+  return MASST_RECORDS_URL.replace(/\.json$/, "") + "?sql=" + encodeURIComponent(masstContextSql(block, true));
 }
 
 var REDU_BACKGROUND_SQL = [
@@ -2459,11 +2487,109 @@ var REDU_BACKGROUND_SQL = [
 // next time instead of being remembered as "no data" (same discipline as the
 // Python lru_cache'd fetchers, which let exceptions escape the cache).
 var _masstContextCache = {};
+var _masstContextLoaded = {};  // blocks whose fetch succeeded this page load
 var _reduBackgroundPromise = null;
+
+// Browser cache (localStorage) for successful MASST responses, so results
+// survive reloads and new tabs instead of hitting masst-records again. Keyed
+// by a hash of the SQL, so a changed query never reads a stale entry.
+// Failures are never stored. Every access is guarded: storage can be full,
+// blocked, or missing (private windows), and the app must work without it.
+var MASST_STORAGE_PREFIX = "annex.masst.";
+var MASST_STORAGE_TTL_MS = 7 * 24 * 3600 * 1000;
+
+function masstStorageKey(sql) {
+  var h = 5381;
+  for (var i = 0; i < sql.length; i++) h = ((h * 33) ^ sql.charCodeAt(i)) >>> 0;
+  return MASST_STORAGE_PREFIX + h.toString(36) + "." + sql.length;
+}
+
+// Returns {t, rows} for a fresh entry, else null.
+function readMasstStorage(sql) {
+  try {
+    var entry = JSON.parse(localStorage.getItem(masstStorageKey(sql)));
+    if (!entry || !Array.isArray(entry.rows) || Date.now() - entry.t > MASST_STORAGE_TTL_MS) return null;
+    return entry;
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeMasstStorage(sql, rows) {
+  var value = JSON.stringify({ t: Date.now(), rows: rows });
+  for (var attempt = 0; attempt < 2; attempt++) {
+    try {
+      localStorage.setItem(masstStorageKey(sql), value);
+      return;
+    } catch (e) {
+      if (attempt === 0) pruneMasstStorage(true);  // probably full: make room once
+    }
+  }
+}
+
+function removeMasstStorage(sql) {
+  try { localStorage.removeItem(masstStorageKey(sql)); } catch (e) { /* storage unavailable */ }
+}
+
+// Drops expired entries; with dropOldestHalf (storage full) also the older
+// half of the fresh ones.
+function pruneMasstStorage(dropOldestHalf) {
+  try {
+    var entries = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf(MASST_STORAGE_PREFIX) !== 0) continue;
+      var t = 0;
+      try { t = JSON.parse(localStorage.getItem(k)).t || 0; } catch (e) { /* corrupt: t = 0, dropped */ }
+      entries.push({ k: k, t: t });
+    }
+    var now = Date.now();
+    var drop = entries.filter(function (e) { return now - e.t > MASST_STORAGE_TTL_MS; });
+    if (dropOldestHalf) {
+      var fresh = entries.filter(function (e) { return now - e.t <= MASST_STORAGE_TTL_MS; })
+        .sort(function (a, b) { return a.t - b.t; });
+      drop = drop.concat(fresh.slice(0, Math.ceil(fresh.length / 2)));
+    }
+    drop.forEach(function (e) { localStorage.removeItem(e.k); });
+  } catch (e) { /* storage unavailable */ }
+}
+pruneMasstStorage(false);
+
+function cachedMasstSql(sql) {
+  var hit = readMasstStorage(sql);
+  if (hit) return Promise.resolve(hit.rows);
+  return fetchMasstSql(sql).then(function (rows) {
+    writeMasstStorage(sql, rows);
+    return rows;
+  });
+}
+
+function isMasstContextCached(block) {
+  return !!_masstContextLoaded[block] || readMasstStorage(masstContextSql(block)) !== null;
+}
+
+// Refresh: forget every cached copy of this block's result.
+function forgetMasstContext(block) {
+  delete _masstContextCache[block];
+  delete _masstContextLoaded[block];
+  removeMasstStorage(masstContextSql(block));
+}
+
+function formatAgo(ms) {
+  var min = Math.round(ms / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return min + " min ago";
+  var h = Math.round(min / 60);
+  if (h < 48) return h + " h ago";
+  return Math.round(h / 24) + " days ago";
+}
 
 function fetchMasstContext(block) {
   if (!_masstContextCache[block]) {
-    _masstContextCache[block] = fetchMasstSql(masstContextSql(block)).catch(function (err) {
+    _masstContextCache[block] = cachedMasstSql(masstContextSql(block)).then(function (rows) {
+      _masstContextLoaded[block] = true;
+      return rows;
+    }).catch(function (err) {
       delete _masstContextCache[block];
       throw err;
     });
@@ -2471,9 +2597,16 @@ function fetchMasstContext(block) {
   return _masstContextCache[block];
 }
 
-function fetchReduBackground() {
+// cacheOnly: used when a cached compound is shown without a click; rejects
+// with err.notCached instead of sending a request.
+function fetchReduBackground(cacheOnly) {
   if (!_reduBackgroundPromise) {
-    _reduBackgroundPromise = fetchMasstSql(REDU_BACKGROUND_SQL).catch(function (err) {
+    if (cacheOnly && !readMasstStorage(REDU_BACKGROUND_SQL)) {
+      var notCached = new Error("REDU background not cached in this browser");
+      notCached.notCached = true;
+      return Promise.reject(notCached);
+    }
+    _reduBackgroundPromise = cachedMasstSql(REDU_BACKGROUND_SQL).catch(function (err) {
       _reduBackgroundPromise = null;
       throw err;
     });
@@ -2503,24 +2636,44 @@ function sumByCategory(rows, catKey, valueKey) {
 }
 
 // ⇔ _detection_rate_df: share of ALL REDU samples in a category that had a
-// MASST hit. Keeps categories the compound never hit (rate 0) and drops
-// categories with fewer than MASST_MIN_BACKGROUND samples (too noisy).
-function detectionRates(compoundCounts, backgroundCounts) {
-  return Object.keys(backgroundCounts)
-    .filter(function (cat) { return backgroundCounts[cat] >= MASST_MIN_BACKGROUND; })
-    .map(function (cat) {
-      var hits = compoundCounts[cat] || 0;
-      return { category: cat, hits: hits, background: backgroundCounts[cat], value: hits / backgroundCounts[cat] * 100 };
-    })
-    .sort(function (a, b) { return b.value - a.value; })
-    .slice(0, MASST_TOP_N);
+// MASST hit, including categories the compound never hit (rate 0). Returns
+// every category; only those with >= MASST_MIN_BACKGROUND REDU samples are
+// charted (a rate over a handful of samples is noise), and the chart notes
+// say what was left out.
+function detectionRateTable(compoundCounts, backgroundCounts) {
+  var all = Object.keys(backgroundCounts).map(function (cat) {
+    var hits = compoundCounts[cat] || 0;
+    return {
+      category: cat, hits: hits, background: backgroundCounts[cat],
+      value: hits / backgroundCounts[cat] * 100,
+      lowSample: backgroundCounts[cat] < MASST_MIN_BACKGROUND
+    };
+  }).sort(function (a, b) { return b.value - a.value || b.hits - a.hits; });
+  var eligible = all.filter(function (r) { return !r.lowSample; });
+  var hidden = all.filter(function (r) { return r.lowSample; });
+  var notes = [];
+  if (eligible.length > MASST_TOP_N) notes.push("Showing the top " + MASST_TOP_N + " of " + eligible.length + " categories.");
+  if (hidden.length) {
+    var hiddenHits = hidden.filter(function (r) { return r.hits > 0; });
+    notes.push(hidden.length + " " + (hidden.length === 1 ? "category" : "categories") + " with fewer than " +
+      MASST_MIN_BACKGROUND + " REDU samples not charted (too few samples for a reliable rate)" +
+      (hiddenHits.length
+        ? "; " + hiddenHits.length + " of them had detections: " + hiddenHits.slice(0, 3).map(function (r) {
+            return r.category + " " + formatCount(r.hits) + "/" + formatCount(r.background);
+          }).join(", ") + (hiddenHits.length > 3 ? ", …" : "") + "."
+        : "."));
+  }
+  return { all: all, charted: eligible.slice(0, MASST_TOP_N), notes: notes };
 }
 
 function topCounts(counts) {
-  return Object.keys(counts)
+  var all = Object.keys(counts)
     .map(function (cat) { return { category: cat, value: counts[cat] }; })
-    .sort(function (a, b) { return b.value - a.value; })
-    .slice(0, MASST_TOP_N);
+    .sort(function (a, b) { return b.value - a.value; });
+  return {
+    charted: all.slice(0, MASST_TOP_N),
+    notes: all.length > MASST_TOP_N ? ["Showing the top " + MASST_TOP_N + " of " + all.length + " categories."] : []
+  };
 }
 
 function el(tag, className, text) {
@@ -2536,14 +2689,16 @@ function formatCount(v) { return Math.round(v).toLocaleString(); }
 // Horizontal bar chart in plain DOM — stands in for the Python app's Plotly
 // bars without pulling in Plotly. Fill opacity scales with value to echo the
 // Teal/Purp colour scales there.
-function buildHbarChart(title, subtitle, items, color, formatValue, tooltip, emptyText) {
+function buildHbarChart(title, subtitle, items, color, formatValue, tooltip, emptyText, notes) {
   var chart = el("div", "hbar-chart");
   chart.appendChild(el("div", "hbar-title", title));
   chart.appendChild(el("div", "hbar-sub", subtitle));
+  (notes || []).forEach(function (n) { chart.appendChild(el("div", "hbar-foot", n)); });
   if (!items.length) {
-    chart.appendChild(el("div", "hbar-empty", emptyText));
+    chart.insertBefore(el("div", "hbar-empty", emptyText), chart.querySelector(".hbar-foot"));
     return chart;
   }
+  var foot = chart.querySelector(".hbar-foot");
   var max = Math.max.apply(null, items.map(function (it) { return it.value; })) || 1;
   items.forEach(function (it) {
     var rowEl = el("div", "hbar-row");
@@ -2558,9 +2713,42 @@ function buildHbarChart(title, subtitle, items, color, formatValue, tooltip, emp
     track.appendChild(fill);
     rowEl.appendChild(track);
     rowEl.appendChild(el("span", "hbar-val", formatValue(it.value)));
-    chart.appendChild(rowEl);
+    chart.insertBefore(rowEl, foot);  // bars above the notes
   });
   return chart;
+}
+
+// "All categories" table: everything behind the detection-rate charts, from
+// data already loaded (no extra request). Categories without detections are
+// summarised as a count rather than listed.
+function buildRateTable(heading, table) {
+  var wrap = el("div");
+  wrap.appendChild(el("h4", "", heading));
+  var withHits = table.all.filter(function (r) { return r.hits > 0; });
+  if (withHits.length) {
+    var t = el("table");
+    var head = el("tr");
+    ["Category", "Detections", "REDU samples", "Detection rate", ""].forEach(function (h, i) {
+      head.appendChild(el("th", i >= 1 && i <= 3 ? "num" : "", h));
+    });
+    t.appendChild(el("thead")).appendChild(head);
+    var tb = t.appendChild(el("tbody"));
+    withHits.forEach(function (r) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "", r.category || "(unspecified)"));
+      tr.appendChild(el("td", "num", formatCount(r.hits)));
+      tr.appendChild(el("td", "num", formatCount(r.background)));
+      tr.appendChild(el("td", "num", formatPct(r.value)));
+      tr.appendChild(el("td", "tag", r.lowSample ? "not charted: < " + MASST_MIN_BACKGROUND + " REDU samples" : ""));
+      tb.appendChild(tr);
+    });
+    wrap.appendChild(t);
+  }
+  var zero = table.all.length - withHits.length;
+  var foot = (withHits.length ? "" : "No detections in any category. ") +
+    (zero ? zero + " other " + (zero === 1 ? "category" : "categories") + " in REDU had no detections." : "");
+  if (foot) wrap.appendChild(el("div", "hbar-foot", foot));
+  return wrap;
 }
 
 var MASST_TEAL = "#1f8a8a";
@@ -2587,15 +2775,44 @@ function downloadCsv(filename, cols, rows) {
   URL.revokeObjectURL(url);
 }
 
-function renderMasstBody(body, block) {
+// "Fetched 3 h ago, saved in this browser · Refresh" for a stored result.
+function buildMasstCacheNote(body, block) {
+  var entry = readMasstStorage(masstContextSql(block));
+  if (!entry) return null;
+  var note = el("div", "masst-note masst-cache-note", "Fetched " + formatAgo(Date.now() - entry.t) + ", saved in this browser · ");
+  var refresh = el("a", "", "Refresh");
+  refresh.href = "#";
+  refresh.title = "Discard the saved result and query MASST/REDU again";
+  refresh.addEventListener("click", function (e) {
+    e.preventDefault();
+    forgetMasstContext(block);
+    renderMasstBody(body, block);
+  });
+  note.appendChild(refresh);
+  return note;
+}
+
+// auto: rendered without a click because the result is already cached; then
+// nothing may be fetched, including the REDU background.
+function renderMasstBody(body, block, auto) {
   body.innerHTML = "";
   body.appendChild(el("div", "masst-note", "Querying MASST/REDU…"));
   var sql = masstContextSql(block);
 
   fetchMasstContext(block).then(function (rows) {
     body.innerHTML = "";
+    var cacheNote = buildMasstCacheNote(body, block);
     if (!rows.length) {
-      body.appendChild(el("div", "masst-note", "No MASST/REDU biological context found for this structure."));
+      var empty = el("div", "masst-empty");
+      empty.appendChild(el("span", "masst-empty-icon", "ⓘ"));
+      var emptyText = el("div");
+      emptyText.appendChild(el("strong", "", "No MASST/REDU biological context found for this structure."));
+      emptyText.appendChild(el("div", "masst-empty-sub",
+        "No REDU-annotated public sample matched library spectra with InChIKey block " + block +
+        ". This reflects MASST coverage, not evidence against the annotation."));
+      empty.appendChild(emptyText);
+      body.appendChild(empty);
+      if (cacheNote) body.appendChild(cacheNote);
       body.appendChild(buildMasstSqlDetails(sql));
       return;
     }
@@ -2604,6 +2821,12 @@ function renderMasstBody(body, block) {
     var totalSpectra = rows.reduce(function (s, r) { return s + toNum(r.total_spectra, 0); }, 0);
     body.appendChild(el("div", "masst-note",
       "Found in " + formatCount(totalSamples) + " REDU samples across " + formatCount(totalSpectra) + " spectra."));
+    if (cacheNote) body.appendChild(cacheNote);
+    if (rows.length >= MASST_CONTEXT_LIMIT) {
+      body.appendChild(el("div", "masst-limit",
+        "This compound reached the query limit of " + MASST_CONTEXT_LIMIT + " sample-type/tissue combinations, so the " +
+        "counts below are incomplete (smallest combinations missing). Open the full query in MASST records for everything."));
+    }
 
     var tissueRows = rows.filter(isAnimalTissueRow);
     var compoundByType = sumByCategory(rows, "SampleType", "num_samples");
@@ -2612,16 +2835,19 @@ function renderMasstBody(body, block) {
     var charts = el("div", "masst-charts");
     var rateOrgSlot = el("div");
     var rateTissueSlot = el("div");
-    rateOrgSlot.appendChild(el("div", "hbar-chart masst-note", "Loading REDU background…"));
     charts.appendChild(rateOrgSlot);
     charts.appendChild(rateTissueSlot);
 
     function countTooltip(it) { return it.category + ": " + formatCount(it.value) + " samples"; }
+    var countByType = topCounts(compoundByType);
+    var countByTissue = topCounts(compoundByTissue);
     charts.appendChild(buildHbarChart("Samples by organism type", "MASST hits per REDU sample type",
-      topCounts(compoundByType), MASST_TEAL, formatCount, countTooltip, "No sample types."));
+      countByType.charted, MASST_TEAL, formatCount, countTooltip, "No sample types.", countByType.notes));
     charts.appendChild(buildHbarChart("Top tissue types (animal)", "MASST hits per UBERON body part",
-      topCounts(compoundByTissue), MASST_PURP, formatCount, countTooltip, "No animal tissue annotations."));
+      countByTissue.charted, MASST_PURP, formatCount, countTooltip, "No animal tissue annotations.", countByTissue.notes));
     body.appendChild(charts);
+    var allSlot = el("div");
+    body.appendChild(allSlot);
 
     // Headline charts: raw counts are dominated by whatever REDU has the most
     // of (fecal, by far), so divide by each category's REDU sample count.
@@ -2629,27 +2855,59 @@ function renderMasstBody(body, block) {
       return it.category + ": " + formatPct(it.value) + " of REDU samples (" +
         formatCount(it.hits) + " / " + formatCount(it.background) + ")";
     }
-    fetchReduBackground().then(function (bgRows) {
-      var bgTissueRows = bgRows.filter(isAnimalTissueRow);
+    function renderRates(cacheOnly) {
       rateOrgSlot.innerHTML = "";
-      rateOrgSlot.appendChild(buildHbarChart("Organism-type detection rate", "% of REDU samples of each type with a detection",
-        detectionRates(compoundByType, sumByCategory(bgRows, "SampleType", "num_samples")),
-        MASST_TEAL, formatPct, rateTooltip, "Detection rate unavailable (no categories with enough REDU samples)."));
-      rateTissueSlot.appendChild(buildHbarChart("Tissue-type detection rate (animal)", "% of REDU samples of each tissue with a detection",
-        detectionRates(compoundByTissue, sumByCategory(bgTissueRows, "UBERONBodyPartName", "num_samples")),
-        MASST_PURP, formatPct, rateTooltip, "Detection rate unavailable (no tissue types with enough REDU samples)."));
-    }).catch(function (err) {
-      rateOrgSlot.innerHTML = "";
-      rateOrgSlot.appendChild(el("div", "hbar-chart hbar-empty", "Detection rates unavailable (REDU background fetch failed: " + err.message + ")."));
-    });
+      rateTissueSlot.innerHTML = "";
+      allSlot.innerHTML = "";
+      rateOrgSlot.appendChild(el("div", "hbar-chart masst-note", "Loading REDU background…"));
+      fetchReduBackground(cacheOnly).then(function (bgRows) {
+        var bgTissueRows = bgRows.filter(isAnimalTissueRow);
+        var rateByType = detectionRateTable(compoundByType, sumByCategory(bgRows, "SampleType", "num_samples"));
+        var rateByTissue = detectionRateTable(compoundByTissue, sumByCategory(bgTissueRows, "UBERONBodyPartName", "num_samples"));
+        rateOrgSlot.innerHTML = "";
+        rateOrgSlot.appendChild(buildHbarChart("Organism-type detection rate", "% of REDU samples of each type with a detection",
+          rateByType.charted, MASST_TEAL, formatPct, rateTooltip,
+          "Detection rate unavailable (no categories with enough REDU samples).", rateByType.notes));
+        rateTissueSlot.appendChild(buildHbarChart("Tissue-type detection rate (animal)", "% of REDU samples of each tissue with a detection",
+          rateByTissue.charted, MASST_PURP, formatPct, rateTooltip,
+          "Detection rate unavailable (no tissue types with enough REDU samples).", rateByTissue.notes));
+
+        var all = el("details", "masst-all");
+        all.appendChild(el("summary", "", "All categories (table, including those not charted)"));
+        var allWrap = el("div", "masst-all-wrap");
+        allWrap.appendChild(buildRateTable("By organism type", rateByType));
+        allWrap.appendChild(buildRateTable("By tissue type (animal)", rateByTissue));
+        all.appendChild(allWrap);
+        allSlot.appendChild(all);
+      }).catch(function (err) {
+        rateOrgSlot.innerHTML = "";
+        var box = el("div", "hbar-chart hbar-empty");
+        box.appendChild(el("div", "", err.notCached
+          ? "Detection rates need the REDU background distribution, which isn't saved in this browser yet."
+          : "Detection rates unavailable (REDU background fetch failed: " + err.message + ")."));
+        var load = el("button", "secondary", err.notCached ? "Load detection rates" : "Retry");
+        load.type = "button";
+        load.style.marginTop = "8px";
+        load.addEventListener("click", function () { renderRates(false); });
+        box.appendChild(load);
+        rateOrgSlot.appendChild(box);
+      });
+    }
+    renderRates(!!auto);
 
     var actions = el("div", "masst-actions");
-    var dl = el("button", "secondary", "Download full table (CSV)");
+    var dl = el("button", "secondary", "Download table (CSV)");
     dl.type = "button";
     dl.addEventListener("click", function () {
       downloadCsv("masst_context_" + block + ".csv", ["SampleType", "UBERONBodyPartName", "num_samples", "total_spectra"], rows);
     });
     actions.appendChild(dl);
+    var explore = el("a", "", "Open full query in MASST records ↗");
+    explore.href = masstExploreUrl(block);
+    explore.target = "_blank";
+    explore.rel = "noopener";
+    explore.title = "Full, unlimited results on masst-records.gnps2.org: edit the SQL, export CSV/JSON";
+    actions.appendChild(explore);
     body.appendChild(actions);
     body.appendChild(buildMasstSqlDetails(sql));
   }).catch(function (err) {
@@ -2682,8 +2940,21 @@ function masstItemsForRow(row) {
   return items;
 }
 
-// Each group is a collapsible block; only the winning group (or a lone group)
-// is fetched up front, the rest fetch on first expand to keep proxy traffic down.
+// Each group is a collapsible block. Nothing is fetched until the user clicks
+// "Load biological context" — opening scans or paging Back/Forward through
+// them must not hit masst-records, which is easily overloaded. Blocks already
+// cached (this page load or localStorage) are shown straight from the cache.
+function renderMasstLoadButton(body, block) {
+  body.innerHTML = "";
+  var actions = el("div", "masst-actions");
+  var btn = el("button", "secondary", "Load biological context");
+  btn.type = "button";
+  btn.addEventListener("click", function () { renderMasstBody(body, block); });
+  actions.appendChild(btn);
+  actions.appendChild(el("span", "masst-note", "Queries MASST/REDU for this structure (can take a while)."));
+  body.appendChild(actions);
+}
+
 function renderMasstSection(row) {
   var section = document.getElementById("masst-section");
   section.innerHTML = "";
@@ -2699,21 +2970,53 @@ function renderMasstSection(row) {
     details.appendChild(summary);
     var body = el("div", "masst-body");
     details.appendChild(body);
-    var loaded = false;
-    details.addEventListener("toggle", function () {
-      if (details.open && !loaded) {
-        loaded = true;
-        renderMasstBody(body, it.block);
-      }
-    });
+    if (isMasstContextCached(it.block)) {
+      renderMasstBody(body, it.block, true);
+    } else {
+      renderMasstLoadButton(body, it.block);
+    }
     if (it.winning || items.length === 1) details.open = true;
     section.appendChild(details);
   });
 }
 
-function openDetail(row) {
+// Browser history: opening a scan pushes its own entry, so the browser Back
+// button returns to the table exactly like the "Back to scored scans" link.
+// The table entry remembers its scroll position; Back restores it.
+function tableUrl() {
+  var params = new URLSearchParams(window.location.search);
+  params.delete("scan");
+  params.delete("detail");
+  return window.location.pathname + (params.toString() ? "?" + params.toString() : "");
+}
+
+function findScanRow(scan) {
+  return currentSummary.filter(function (r) { return String(r.scan) === String(scan); })[0];
+}
+
+function showTable(scrollState) {
+  detailCard.style.display = "none";
+  resultsCard.style.display = "";
+  resultsWrap.scrollTop = (scrollState && scrollState.tableScroll) || 0;
+  window.scrollTo(0, (scrollState && scrollState.scrollY) || 0);
+}
+
+// opts.history === false re-renders without touching history (popstate, reload).
+function openDetail(row, opts) {
+  if (!opts || opts.history !== false) {
+    // Read scroll before the table is hidden (hidden elements report 0).
+    // Replacing with tableUrl() also turns a deep-linked detail entry into
+    // the table entry, so Back from a shared ?scan=…&detail=1 link works too.
+    history.replaceState({ view: "table", task: currentTaskId, scrollY: window.scrollY, tableScroll: resultsWrap.scrollTop }, "", tableUrl());
+    var params = new URLSearchParams(window.location.search);
+    params.set("scan", row.scan);
+    params.set("detail", "1");
+    history.pushState({ view: "detail", task: currentTaskId, scan: String(row.scan) }, "", "?" + params.toString());
+  }
+
   resultsCard.style.display = "none";
   detailCard.style.display = "block";
+  window.scrollTo(0, 0);
 
   var color = colorForBadge(row.badge_color);
   drawGauge(row.confidence_score, color);
@@ -2786,20 +3089,31 @@ function openDetail(row) {
 
   renderGroupsGrid(row);
   renderMasstSection(row);
-
-  var params = new URLSearchParams(window.location.search);
-  params.set("scan", row.scan);
-  params.set("detail", "1");
-  history.replaceState(null, "", "?" + params.toString());
 }
 
 document.getElementById("detail-back").addEventListener("click", function () {
-  detailCard.style.display = "none";
-  resultsCard.style.display = "";
+  if (history.state && history.state.view === "detail") {
+    history.back();  // popstate below restores the table
+    return;
+  }
+  history.replaceState(null, "", tableUrl());
+  showTable();
+});
+
+window.addEventListener("popstate", function (e) {
+  var state = e.state || {};
+  // Entries from a previously loaded task don't map onto this summary.
+  if (!currentSummary.length || (state.task && state.task !== currentTaskId)) {
+    showTable();
+    return;
+  }
   var params = new URLSearchParams(window.location.search);
-  params.delete("scan");
-  params.delete("detail");
-  history.replaceState(null, "", window.location.pathname + (params.toString() ? "?" + params.toString() : ""));
+  var match = params.get("detail") === "1" && params.get("scan") ? findScanRow(params.get("scan")) : null;
+  if (match) {
+    openDetail(match, { history: false });
+  } else {
+    showTable(state);
+  }
 });
 
 document.getElementById("download-btn").addEventListener("click", function () {
@@ -2826,6 +3140,12 @@ var workflowSelect = document.getElementById("workflow");
 function runScoring(taskId, workflowChoice) {
   loadBtn.disabled = true;
   currentTaskId = taskId;
+  // Keep task/workflow in the URL so a detail URL copied from the address bar
+  // is a working deep link (the Load/Example buttons don't otherwise set them).
+  var urlParams = new URLSearchParams(window.location.search);
+  urlParams.set("task", taskId);
+  urlParams.set("workflow", workflowChoice);
+  history.replaceState(history.state, "", "?" + urlParams.toString());
   resultsCard.style.display = "none";
   resultsWrap.style.display = "none";
   detailCard.style.display = "none";
@@ -2872,8 +3192,10 @@ function runScoring(taskId, workflowChoice) {
 
     var params = new URLSearchParams(window.location.search);
     if (params.get("detail") === "1" && params.get("scan")) {
-      var wanted = String(params.get("scan"));
-      var match = summary.filter(function (r) { return String(r.scan) === wanted; })[0];
+      var match = findScanRow(params.get("scan"));
+      // Always push, even on a reload or a same-URL paste: the table entry
+      // behind a reloaded detail belongs to the previous page load, so Back
+      // would reload and re-score the whole task instead of popping instantly.
       if (match) openDetail(match);
     }
   }).catch(function (err) {
@@ -2887,9 +3209,13 @@ function runScoring(taskId, workflowChoice) {
 loadBtn.addEventListener("click", function () {
   var taskId = taskInput.value.trim();
   if (!taskId) { setStatus("Enter a GNPS2 task ID first.", "warn"); return; }
+  // A ?scan=…&detail=1 left over from the previous task must not reopen
+  // that scan number in the new one.
+  history.replaceState(null, "", tableUrl());
   runScoring(taskId, workflowSelect.value);
 });
 exampleBtn.addEventListener("click", function () {
+  history.replaceState(null, "", tableUrl());
   taskInput.value = "b22ff1bc41624e29a28cf6e12fe17ad5";
   workflowSelect.value = "fbmn";
   runScoring(taskInput.value, workflowSelect.value);
