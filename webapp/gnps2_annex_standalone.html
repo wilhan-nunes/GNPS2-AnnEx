@@ -422,7 +422,7 @@
 
   <footer>All computation runs client-side via RDKit.js (loaded from a CDN — cheminformatics of this depth has no pure-JS equivalent) and plain JavaScript. GNPS2 requests go directly from your browser to gnps2.org over CORS.
   <br>One exception: library rows whose only structure field is INCHI (no SMILES) are resolved via a best-effort, exact-match lookup to PubChem (structure identifier only, never your spectra/task data) before scoring, since no browser-side toolkit here can parse InChI — see the code comment near <code>deriveSmilesFromInchi</code>.
-  <br>Biological context queries send only the InChIKey first block of each candidate structure to the MASST records API (masst-records.gnps2.org), currently via a CORS proxy because that service does not allow browser requests yet — see <code>MASST_CORS_PROXY</code>.
+  <br>Biological context queries send only the InChIKey first block of each candidate structure to the MASST records API (masst-records.gnps2.org), via apps.gnps2.org's same-origin pass-through <code>/api/masst_records</code> — see <code>MASST_RECORDS_URL</code>.
   <br>Known difference from the Python app: on rare positional-isomer group ties (~1% of scans in testing), this port and the Python scorer can pick different, equally-valid tied groups — see the code comment near <code>exactToPositional</code> for details.</footer>
 </div>
 
@@ -493,20 +493,24 @@ var DEFAULT_MAX_PEAK_NUM = 100;
 var GNPS2_HOST = "https://gnps2.org";
 var LOADER_TIMEOUT_MS = 20000;
 
-// MASST records API (Datasette). Unlike gnps2.org it sends no
-// Access-Control-Allow-Origin header, so browsers block direct requests and
-// they have to go through a CORS proxy. MASST_CORS_PROXY picks how:
-//   ""                → call MASST_RECORDS_URL directly (once upstream allows CORS,
-//                       e.g. Datasette started with --cors)
+// MASST records API (Datasette at masst-records.gnps2.org, which sends no CORS
+// header). Queries go to apps.gnps2.org's same-origin pass-through
+// /api/masst_records (NextGenWebApps app.py), which forwards the query string
+// verbatim to masst_records.json and returns Datasette's JSON unchanged. The
+// path is root-relative, so this only works when the page is served from
+// apps.gnps2.org (curated templates/ or /sandbox).
+// MASST_CORS_PROXY is only a fallback for other hosts (file://, localhost):
+//   ""                → call MASST_RECORDS_URL directly (default)
 //   contains "{url}"  → wrapping proxy; {url} becomes the percent-encoded
 //                       upstream URL (e.g. "https://proxy.example/?url={url}")
 //   anything else     → path-mirroring proxy base that replaces the upstream
-//                       origin (e.g. "https://masst-proxy.gnps2.org")
-// Default is the local test proxy (webapp/masst_cors_proxy.py) until GNPS2
-// hosts one. Override per page load with ?masst_proxy=<value>; an empty
-// value (?masst_proxy=) means direct.
-var MASST_RECORDS_URL = "https://masst-records.gnps2.org/masst_records.json";
-var MASST_CORS_PROXY = "http://localhost:8787";
+//                       origin (e.g. "http://localhost:8787" for
+//                       webapp/masst_cors_proxy.py)
+// Override per page load with ?masst_proxy=<value>.
+var MASST_RECORDS_URL = "/api/masst_records";
+// Datasette's own HTML query page, for the "open full query" link.
+var MASST_EXPLORE_URL = "https://masst-records.gnps2.org/masst_records";
+var MASST_CORS_PROXY = "";
 var MASST_TIMEOUT_MS = 60000;
 
 function confidenceCategory(score) {
@@ -2471,7 +2475,7 @@ function masstContextSql(block, unlimited) {
 // Datasette's HTML query page: full results, editable SQL, CSV/JSON export.
 // A plain link (navigation), so it needs no CORS proxy.
 function masstExploreUrl(block) {
-  return MASST_RECORDS_URL.replace(/\.json$/, "") + "?sql=" + encodeURIComponent(masstContextSql(block, true));
+  return MASST_EXPLORE_URL + "?sql=" + encodeURIComponent(masstContextSql(block, true));
 }
 
 var REDU_BACKGROUND_SQL = [
